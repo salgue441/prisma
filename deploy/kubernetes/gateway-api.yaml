@@ -8,7 +8,7 @@
 #    GRPCRoutes, and attach Prisma features with PrismaPolicy. See
 #    examples/14-kubernetes for a complete walkthrough.
 #
-# The image is built from this repository (docker build -t prisma:v0.4.0 .);
+# The image is built from this repository (docker build -t prisma:v0.5.0 .);
 # push it to a registry your cluster can pull from, or kind load it.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -163,7 +163,7 @@ spec:
         sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]
       containers:
         - name: prisma
-          image: prisma:v0.4.0
+          image: prisma:v0.5.0
           args: ["-config", "/etc/prisma/prisma.yaml"]
           ports:
             - {name: http, containerPort: 80}
