@@ -147,6 +147,33 @@ func (ch *Chain) RunResponse(c *Context, resp *http.Response) (err error) {
 	return nil
 }
 
+// MergeHeaders copies src into dst. Vary accumulates tokens from every source
+// (upstream, CORS, compression); other headers replace dst's values.
+func MergeHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if k != "Vary" {
+			dst[k] = vs
+			continue
+		}
+		for _, v := range vs {
+			if !headerHasToken(dst, "Vary", v) {
+				dst.Add("Vary", v)
+			}
+		}
+	}
+}
+
+func headerHasToken(h http.Header, key, token string) bool {
+	for _, v := range h.Values(key) {
+		for _, t := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Expand replaces ${...} variables in tpl with request values:
 // consumer, principal, auth_method, request_id, client_ip, route,
 // claim.<name> and header.<name>. Unknown variables expand to "".

@@ -279,6 +279,23 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 			add("%s: cost must be empty or graphql", w)
 		}
 	}
+	if cors := p.CORS; cors != nil {
+		if len(cors.AllowOrigins) == 0 {
+			add("%s: cors.allowOrigins is required", where)
+		}
+		for _, o := range cors.AllowOrigins {
+			switch {
+			case o == "*":
+				if cors.AllowCredentials {
+					add("%s: cors: allowCredentials cannot be combined with origin *", where)
+				}
+			case !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://"):
+				add("%s: cors origin %q must start with http:// or https://", where, o)
+			case strings.Count(o, "*") > 1 || (strings.Contains(o, "*") && !strings.Contains(o, "://*.")):
+				add("%s: cors origin %q: wildcards must look like https://*.example.com", where, o)
+			}
+		}
+	}
 	if m := p.Masking; m != nil {
 		if !slices.Contains([]string{"", "closed", "open"}, m.OnFailure) {
 			add("%s: masking.onFailure must be closed or open", where)

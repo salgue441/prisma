@@ -230,6 +230,50 @@ routes:
 	}
 }
 
+func TestCORSRunsBeforeAuthAndDecoratesErrors(t *testing.T) {
+	var hits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Vary", "Accept-Encoding")
+	}))
+	defer up.Close()
+	_, gw := newGateway(t, basePrefix+`
+consumers: [{name: web, apiKeys: [k]}]
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: api
+    match: {pathPrefix: /}
+    cors: {allowOrigins: ["https://app.example.com"], allowCredentials: true}
+    authn: {apiKey: {}}
+    backends: [{cluster: up}]
+`, map[string]string{"up": addr(up)})
+
+	req, _ := http.NewRequest(http.MethodOptions, gw.URL+"/x", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" || hits.Load() != 0 {
+		t.Fatalf("preflight: %d %v, upstream hits %d", resp.StatusCode, resp.Header, hits.Load())
+	}
+
+	resp, _ = get(t, gw.URL+"/x", map[string]string{"Origin": "https://app.example.com"})
+	if resp.StatusCode != 401 || resp.Header.Get("Access-Control-Allow-Origin") == "" {
+		t.Errorf("401 must carry CORS headers so the browser can read it: %d %v", resp.StatusCode, resp.Header)
+	}
+
+	resp, _ = get(t, gw.URL+"/x", map[string]string{"Origin": "https://app.example.com", "X-API-Key": "k"})
+	vary := strings.Join(resp.Header.Values("Vary"), ",")
+	if resp.StatusCode != 200 || !strings.Contains(vary, "Accept-Encoding") || !strings.Contains(vary, "Origin") {
+		t.Errorf("upstream and CORS Vary must both survive: %d %q", resp.StatusCode, vary)
+	}
+}
+
 func TestLocalRateLimit(t *testing.T) {
 	up := echo(t)
 	_, gw := newGateway(t, basePrefix+`
