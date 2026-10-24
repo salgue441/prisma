@@ -10,3 +10,5 @@ coverage.*
 
 # Example build artifacts
 *.wasm
+examples/15-tcp-tls/tls.crt
+examples/15-tcp-tls/tls.key

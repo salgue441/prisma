@@ -59,6 +59,7 @@ func translate(t *testing.T, manifests string, base *config.Config) Output {
 		ControllerName: controller, Base: base,
 		GatewayClasses: o["GatewayClass"], Gateways: o["Gateway"], HTTPRoutes: o["HTTPRoute"], GRPCRoutes: o["GRPCRoute"],
 		ReferenceGrants: o["ReferenceGrant"], Services: o["Service"], Secrets: o["Secret"], Policies: o["PrismaPolicy"],
+		TLSRoutes: o["TLSRoute"], TCPRoutes: o["TCPRoute"],
 	})
 	// Every translation must produce a configuration the gateway accepts.
 	cfg := *base
@@ -112,7 +113,7 @@ spec:
   gatewayClassName: prisma
   listeners:
     - {name: http, port: 80, protocol: HTTP, hostname: "*.example.com", allowedRoutes: {namespaces: {from: All}}}
-    - {name: tcp, port: 9000, protocol: TCP}
+    - {name: udp, port: 9000, protocol: UDP}
 `
 
 func route(t *testing.T, out Output, kind, ns, name string) RouteStatus {
@@ -200,7 +201,7 @@ spec:
 		t.Errorf("gateway status = %+v", gs)
 	}
 	if c := condition(gs.Listeners[1].Conditions, "Accepted"); c.Status != "False" || c.Reason != "UnsupportedProtocol" {
-		t.Errorf("TCP listener = %+v", gs.Listeners[1])
+		t.Errorf("UDP listener = %+v", gs.Listeners[1])
 	}
 	if len(out.Status.Classes) != 1 || out.Status.Classes[0].Name != "prisma" {
 		t.Errorf("classes = %+v", out.Status.Classes)
@@ -500,6 +501,126 @@ spec:
 	for i := 0; i < 20; i++ {
 		if !reflect.DeepEqual(first, translate(t, manifests, nil)) {
 			t.Fatal("translation output depends on map iteration order")
+		}
+	}
+}
+
+func TestTLSAndTCPRouteTranslation(t *testing.T) {
+	crt, key := selfSigned(t)
+	b64 := base64.StdEncoding.EncodeToString
+	out := translate(t, classes+`
+---
+apiVersion: v1
+kind: Service
+metadata: {name: db, namespace: default}
+spec:
+  ports: [{name: pg, port: 5432, targetPort: 5432}]
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: db-tls, namespace: default}
+type: kubernetes.io/tls
+data: {tls.crt: `+b64(crt)+`, tls.key: `+b64(key)+`}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: {name: edge, namespace: default}
+spec:
+  gatewayClassName: prisma
+  listeners:
+    - {name: passthrough, port: 443, protocol: TLS, tls: {mode: Passthrough}}
+    - {name: postgres, port: 5432, protocol: TCP}
+    - {name: postgres-tls, port: 6432, protocol: TLS, hostname: db.example.com, tls: {certificateRefs: [{name: db-tls}]}}
+    - {name: tls-only-tcp, port: 7000, protocol: TLS, tls: {mode: Passthrough}, allowedRoutes: {kinds: [{kind: TCPRoute}]}}
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata: {name: orders, namespace: default}
+spec:
+  parentRefs: [{name: edge, sectionName: passthrough}]
+  hostnames: [orders.example.com, "*.shop.example.com"]
+  rules: [{backendRefs: [{name: orders, port: 80}]}]
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata: {name: pg, namespace: default}
+spec:
+  parentRefs: [{name: edge, sectionName: postgres}, {name: edge, sectionName: postgres-tls}]
+  rules: [{backendRefs: [{name: db, port: 5432, weight: 3}, {name: missing, port: 1}]}]
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata: {name: wrong-listener, namespace: default}
+spec:
+  parentRefs: [{name: edge, sectionName: passthrough}]
+  rules: [{backendRefs: [{name: db, port: 5432}]}]
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata: {name: no-backends, namespace: default}
+spec:
+  parentRefs: [{name: edge, sectionName: passthrough}]
+  hostnames: [nothing.example.com]
+  rules: [{backendRefs: [{name: missing, port: 1}]}]
+`, nil)
+
+	listeners := map[string]config.Listener{}
+	for _, l := range out.Listeners {
+		listeners[l.Address] = l
+	}
+	if l := listeners[":443"]; l.Type != config.ListenerTLSPassthrough || l.TLS != nil {
+		t.Errorf("passthrough listener = %+v", l)
+	}
+	if l := listeners[":5432"]; l.Type != config.ListenerTCP || l.TLS != nil {
+		t.Errorf("tcp listener = %+v", l)
+	}
+	if l := listeners[":6432"]; l.Type != config.ListenerTCP || l.TLS == nil || l.TLS.Certificates[0].CertPEM != string(crt) {
+		t.Errorf("tls-terminating listener = %+v", l)
+	}
+
+	byName := map[string]config.Route{}
+	for _, r := range out.Routes {
+		byName[r.Name] = r
+		if r.Type != config.RouteTCP || len(r.Use) > 0 {
+			t.Errorf("route %s: type %q, use %v", r.Name, r.Type, r.Use)
+		}
+	}
+	tls := byName["k8s/tlsroute/default/orders/r0/m0/a0"]
+	if !reflect.DeepEqual(tls.Match.Hosts, []string{"orders.example.com", "*.shop.example.com"}) || tls.Listeners[0] != "k8s/port/443" {
+		t.Errorf("TLSRoute = %+v", tls)
+	}
+	plain, terminated := byName["k8s/tcproute/default/pg/r0/m0/a0"], byName["k8s/tcproute/default/pg/r0/m0/a1"]
+	if plain.Match.Hosts != nil || plain.Listeners[0] != "k8s/port/5432" || len(plain.Backends) != 1 || plain.Backends[0].Weight != 3 {
+		t.Errorf("TCPRoute on TCP = %+v", plain)
+	}
+	if !reflect.DeepEqual(terminated.Match.Hosts, []string{"db.example.com"}) || terminated.Listeners[0] != "k8s/port/6432" {
+		t.Errorf("TCPRoute on terminating TLS = %+v", terminated)
+	}
+	if _, ok := byName["k8s/tlsroute/default/no-backends/r0/m0/a0"]; ok {
+		t.Error("a TLSRoute without resolvable backends must not produce a route")
+	}
+
+	rs := route(t, out, KindTCPRoute, "default", "pg")
+	if c := condition(rs.Parents[0].Conditions, "ResolvedRefs"); c.Status != "False" || c.Reason != "BackendNotFound" {
+		t.Errorf("pg ResolvedRefs = %+v", c)
+	}
+	rs = route(t, out, KindTCPRoute, "default", "wrong-listener")
+	if c := condition(rs.Parents[0].Conditions, "Accepted"); c.Status != "False" || c.Reason != "NotAllowedByListeners" {
+		t.Errorf("TCPRoute on a passthrough listener: %+v", c)
+	}
+	for _, gs := range out.Status.Gateways {
+		for _, ls := range gs.Listeners {
+			switch ls.Name {
+			case "passthrough":
+				if !reflect.DeepEqual(ls.SupportedKinds, []string{KindTLSRoute}) || ls.AttachedRoutes != 2 {
+					t.Errorf("passthrough listener status = %+v", ls)
+				}
+			case "tls-only-tcp":
+				// TCPRoute cannot ride a passthrough listener, so nothing is left.
+				if len(ls.SupportedKinds) != 0 {
+					t.Errorf("kinds narrowed to an unsupported kind = %v", ls.SupportedKinds)
+				}
+			}
 		}
 	}
 }
