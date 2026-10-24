@@ -28,13 +28,29 @@ const (
 // Registry shares JWKS caches across config snapshots so a reload does not
 // force every key set to be refetched.
 type Registry struct {
-	mu     sync.Mutex
-	caches map[string]*jwks
-	client *http.Client
+	mu            sync.Mutex
+	caches        map[string]*jwks
+	introspection map[string]*introspectionCache
+	client        *http.Client
 }
 
 func NewRegistry() *Registry {
-	return &Registry{caches: map[string]*jwks{}, client: &http.Client{Timeout: 5 * time.Second}}
+	return &Registry{
+		caches:        map[string]*jwks{},
+		introspection: map[string]*introspectionCache{},
+		client:        &http.Client{Timeout: 5 * time.Second},
+	}
+}
+
+func (r *Registry) introspectionCache(key string) *introspectionCache {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.introspection[key]
+	if !ok {
+		c = newIntrospectionCache()
+		r.introspection[key] = c
+	}
+	return c
 }
 
 func (r *Registry) get(uri string) *jwks {

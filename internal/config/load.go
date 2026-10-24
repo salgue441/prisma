@@ -251,6 +251,9 @@ func (c *Config) Redacted() *Config {
 		if p.AuthN != nil && p.AuthN.JWT != nil && p.AuthN.JWT.Secret != "" {
 			p.AuthN.JWT.Secret = r
 		}
+		if p.AuthN != nil && p.AuthN.Introspection != nil && p.AuthN.Introspection.ClientSecret != "" {
+			p.AuthN.Introspection.ClientSecret = r
+		}
 		if p.Masking != nil && p.Masking.HashKey != "" {
 			p.Masking.HashKey = r
 		}
