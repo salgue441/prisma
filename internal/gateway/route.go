@@ -180,7 +180,9 @@ func (g *Gateway) newProxy(cl *upstream.Cluster, chain *pipeline.Chain, snap *Sn
 			case cl.Config.PreserveHost:
 				pr.Out.Host = pr.In.Host
 			default:
-				pr.Out.Host = ""
+				// Static clusters send the endpoint address; discovered
+				// clusters send the service name, not a pod IP.
+				pr.Out.Host = cl.DefaultHost
 			}
 			setForwarded(pr, c, snap)
 			pr.Out.Header.Set("X-Request-Id", c.RequestID)

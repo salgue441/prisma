@@ -102,8 +102,8 @@ func TestBreakerOpensAndRecovers(t *testing.T) {
 }
 
 func TestPickRelaxation(t *testing.T) {
-	c := &Cluster{Endpoints: endpoints(1, 1), balancer: &roundRobin{}}
-	a, b := c.Endpoints[0], c.Endpoints[1]
+	c := testCluster(config.Cluster{}, endpoints(1, 1))
+	a, b := c.Endpoints()[0], c.Endpoints()[1]
 	if got := c.pick(nil, []*Endpoint{a}); got != b {
 		t.Error("should prefer an untried endpoint")
 	}
@@ -122,16 +122,16 @@ func TestPickRelaxation(t *testing.T) {
 }
 
 func TestOutlierEjectionRespectsMaxPercent(t *testing.T) {
-	c := &Cluster{
-		Config:    config.Cluster{OutlierDetection: &config.OutlierDetection{ConsecutiveFailures: 1, BaseEjection: time.Minute, MaxEjectionPercent: 50}},
-		Endpoints: endpoints(1, 1, 1),
-	}
-	for _, e := range c.Endpoints {
+	c := testCluster(
+		config.Cluster{OutlierDetection: &config.OutlierDetection{ConsecutiveFailures: 1, BaseEjection: time.Minute, MaxEjectionPercent: 50}},
+		endpoints(1, 1, 1),
+	)
+	for _, e := range c.Endpoints() {
 		c.outlier(e, true)
 	}
 	now := time.Now()
 	ejected := 0
-	for _, e := range c.Endpoints {
+	for _, e := range c.Endpoints() {
 		if e.Ejected(now) {
 			ejected++
 		}

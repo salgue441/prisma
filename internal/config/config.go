@@ -86,7 +86,8 @@ type Certificate struct {
 type Cluster struct {
 	Name                string            `yaml:"name" json:"name"`
 	Protocol            string            `yaml:"protocol" json:"protocol"` // http1 | http2 | h2c
-	Endpoints           []Endpoint        `yaml:"endpoints" json:"endpoints"`
+	Endpoints           []Endpoint        `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Discovery           *Discovery        `yaml:"discovery,omitempty" json:"discovery,omitempty"`
 	TLS                 *UpstreamTLS      `yaml:"tls,omitempty" json:"tls,omitempty"`
 	PreserveHost        bool              `yaml:"preserveHost" json:"preserveHost"`
 	ConnectTimeout      time.Duration     `yaml:"connectTimeout" json:"connectTimeout"`
@@ -100,6 +101,16 @@ type Cluster struct {
 type Endpoint struct {
 	Address string `yaml:"address" json:"address"`
 	Weight  int    `yaml:"weight" json:"weight"`
+}
+
+// Discovery resolves endpoints from DNS and refreshes them periodically.
+// "dns" uses A/AAAA records with a fixed port (e.g. Kubernetes headless
+// services); "srv" uses SRV records, which carry ports and weights.
+type Discovery struct {
+	Type     string        `yaml:"type" json:"type"`
+	Host     string        `yaml:"host" json:"host"`
+	Port     int           `yaml:"port,omitempty" json:"port,omitempty"`
+	Interval time.Duration `yaml:"interval" json:"interval"`
 }
 
 type UpstreamTLS struct {
