@@ -50,6 +50,9 @@ type Context struct {
 	RequestID    string
 	Start        time.Time
 	OriginalPath string
+	// AcceptEncoding is the client's original Accept-Encoding; filters may
+	// strip the header before proxying (e.g. masking needs identity bodies).
+	AcceptEncoding string
 
 	Principal *Principal
 	GraphQL   *GraphQLInfo
@@ -68,7 +71,20 @@ type Context struct {
 	Rejection string
 	// Error is the internal error behind a gateway-generated response, for logs.
 	Error string
+
+	// values holds filter-private state shared between a filter's request
+	// and response phases. Keys should be unexported types of that filter.
+	values map[any]any
 }
+
+func (c *Context) SetValue(k, v any) {
+	if c.values == nil {
+		c.values = map[any]any{}
+	}
+	c.values[k] = v
+}
+
+func (c *Context) Value(k any) any { return c.values[k] }
 
 type ctxKey struct{}
 
@@ -145,6 +161,33 @@ func (ch *Chain) RunResponse(c *Context, resp *http.Response) (err error) {
 		}
 	}
 	return nil
+}
+
+// MergeHeaders copies src into dst. Vary accumulates tokens from every source
+// (upstream, CORS, compression); other headers replace dst's values.
+func MergeHeaders(dst, src http.Header) {
+	for k, vs := range src {
+		if k != "Vary" {
+			dst[k] = vs
+			continue
+		}
+		for _, v := range vs {
+			if !headerHasToken(dst, "Vary", v) {
+				dst.Add("Vary", v)
+			}
+		}
+	}
+}
+
+func headerHasToken(h http.Header, key, token string) bool {
+	for _, v := range h.Values(key) {
+		for _, t := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(t), token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Expand replaces ${...} variables in tpl with request values:

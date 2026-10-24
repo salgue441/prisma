@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +19,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -24,6 +29,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"prisma/internal/config"
 	"prisma/internal/gateway"
@@ -230,6 +236,50 @@ routes:
 	}
 }
 
+func TestCORSRunsBeforeAuthAndDecoratesErrors(t *testing.T) {
+	var hits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Vary", "Accept-Encoding")
+	}))
+	defer up.Close()
+	_, gw := newGateway(t, basePrefix+`
+consumers: [{name: web, apiKeys: [k]}]
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: api
+    match: {pathPrefix: /}
+    cors: {allowOrigins: ["https://app.example.com"], allowCredentials: true}
+    authn: {apiKey: {}}
+    backends: [{cluster: up}]
+`, map[string]string{"up": addr(up)})
+
+	req, _ := http.NewRequest(http.MethodOptions, gw.URL+"/x", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 204 || resp.Header.Get("Access-Control-Allow-Origin") != "https://app.example.com" || hits.Load() != 0 {
+		t.Fatalf("preflight: %d %v, upstream hits %d", resp.StatusCode, resp.Header, hits.Load())
+	}
+
+	resp, _ = get(t, gw.URL+"/x", map[string]string{"Origin": "https://app.example.com"})
+	if resp.StatusCode != 401 || resp.Header.Get("Access-Control-Allow-Origin") == "" {
+		t.Errorf("401 must carry CORS headers so the browser can read it: %d %v", resp.StatusCode, resp.Header)
+	}
+
+	resp, _ = get(t, gw.URL+"/x", map[string]string{"Origin": "https://app.example.com", "X-API-Key": "k"})
+	vary := strings.Join(resp.Header.Values("Vary"), ",")
+	if resp.StatusCode != 200 || !strings.Contains(vary, "Accept-Encoding") || !strings.Contains(vary, "Origin") {
+		t.Errorf("upstream and CORS Vary must both survive: %d %q", resp.StatusCode, vary)
+	}
+}
+
 func TestLocalRateLimit(t *testing.T) {
 	up := echo(t)
 	_, gw := newGateway(t, basePrefix+`
@@ -348,6 +398,44 @@ routes:
 	resp, _ = get(t, gw.URL+"/gzip", nil)
 	if resp.StatusCode != 502 {
 		t.Errorf("unmaskable response: status %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestCompressionAppliesAfterMasking(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ssn":"123-45-6789","filler":"`+strings.Repeat("abc", 2000)+`"}`)
+	}))
+	defer up.Close()
+	_, gw := newGateway(t, basePrefix+`
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: r
+    match: {pathPrefix: /}
+    masking: {rules: [{selector: "$.ssn", strategy: redact}]}
+    compression: {algorithms: [gzip]}
+    backends: [{cluster: up}]
+`, map[string]string{"up": addr(up)})
+
+	req, _ := http.NewRequest(http.MethodGet, gw.URL+"/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("not compressed: %v", resp.Header)
+	}
+	zr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := io.ReadAll(zr)
+	if !strings.Contains(string(plain), `"ssn":"***"`) {
+		t.Errorf("body was compressed before masking: %.80s", plain)
 	}
 }
 
@@ -494,6 +582,76 @@ routes:
 	}
 }
 
+func TestTracingPropagatesContextAndRecordsSpans(t *testing.T) {
+	var upstreamTraceparent atomic.Value
+	attempt := atomic.Int32{}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamTraceparent.Store(r.Header.Get("Traceparent"))
+		if attempt.Add(1) == 1 {
+			w.WriteHeader(503) // force one retry → two client spans
+		}
+	}))
+	defer up.Close()
+
+	yml := strings.ReplaceAll(basePrefix+`
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: traced
+    match: {pathPrefix: /}
+    retries: {attempts: 1, on: ["503"], backoff: 1ms}
+    backends: [{cluster: up}]
+`, "{{up}}", addr(up))
+	cfg, v, err := config.Parse([]byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	gw := gateway.New(telemetry.NewMetrics(), nil)
+	gw.SetTracerProvider(tp)
+	if err := gw.Apply(cfg, v); err != nil {
+		t.Fatal(err)
+	}
+	defer gw.Close()
+	srv := httptest.NewServer(gw.Handler("public"))
+	defer srv.Close()
+
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	resp, _ := get(t, srv.URL+"/x", map[string]string{"Traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+
+	spans := rec.Ended()
+	var server sdktrace.ReadOnlySpan
+	var clients []sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		switch s.SpanKind() {
+		case trace.SpanKindServer:
+			server = s
+		case trace.SpanKindClient:
+			clients = append(clients, s)
+		}
+	}
+	if server == nil || server.Name() != "GET traced" || server.SpanContext().TraceID().String() != parentTrace {
+		t.Fatalf("server span missing or not joined to the inbound trace: %v", spans)
+	}
+	if len(clients) != 2 {
+		t.Fatalf("want one client span per attempt (2), got %d", len(clients))
+	}
+	for _, c := range clients {
+		if c.Parent().SpanID() != server.SpanContext().SpanID() {
+			t.Error("client span is not a child of the server span")
+		}
+	}
+	gotTP := upstreamTraceparent.Load().(string)
+	if !strings.Contains(gotTP, parentTrace) || strings.Contains(gotTP, "00f067aa0ba902b7") {
+		t.Errorf("upstream traceparent %q must carry the trace id with the gateway's client span id", gotTP)
+	}
+}
+
 // --- gRPC ---
 
 func startGRPCUpstream(t *testing.T) string {
@@ -532,6 +690,105 @@ func startH2CGateway(t *testing.T, yml string) string {
 	go srv.Serve()
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	return srv.Addr()
+}
+
+// grpcWebCall performs a unary gRPC-Web call over HTTP/1.1 and returns the
+// decoded data message, trailer block and response headers.
+func grpcWebCall(t *testing.T, url string, text bool, msg proto.Message) ([]byte, string, http.Header) {
+	t.Helper()
+	payload, _ := proto.Marshal(msg)
+	frame := append([]byte{0, 0, 0, 0, 0}, payload...)
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(payload)))
+	ct := "application/grpc-web+proto"
+	body := frame
+	if text {
+		ct = "application/grpc-web-text"
+		body = []byte(base64.StdEncoding.EncodeToString(frame))
+	}
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", ct)
+	req.Header.Set("X-Grpc-Web", "1")
+	resp, err := (&http.Transport{}).RoundTrip(req) // forces HTTP/1.1, like a browser fetch
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if text {
+		var dec []byte
+		for len(raw) >= 4 { // concatenated, independently padded segments
+			chunk := make([]byte, 3)
+			n, err := base64.StdEncoding.Decode(chunk, raw[:4])
+			if err != nil {
+				t.Fatalf("bad base64 in response: %v", err)
+			}
+			dec, raw = append(dec, chunk[:n]...), raw[4:]
+		}
+		raw = dec
+	}
+	var data []byte
+	var trailers string
+	for len(raw) >= 5 {
+		flag, n := raw[0], binary.BigEndian.Uint32(raw[1:5])
+		chunk := raw[5 : 5+n]
+		if flag&0x80 != 0 {
+			trailers = string(chunk)
+		} else {
+			data = chunk
+		}
+		raw = raw[5+n:]
+	}
+	return data, trailers, resp.Header
+}
+
+func TestGRPCWebTranslation(t *testing.T) {
+	upAddr := startGRPCUpstream(t)
+	_, gw := newGateway(t, basePrefix+`
+clusters:
+  - name: health
+    protocol: h2c
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: health-web
+    match: {grpcService: grpc.health.v1.Health}
+    grpcWeb: true
+    backends: [{cluster: health}]
+`, map[string]string{"up": upAddr})
+	url := gw.URL + "/grpc.health.v1.Health/Check"
+
+	for _, text := range []bool{false, true} {
+		data, trailers, hdr := grpcWebCall(t, url, text, &healthpb.HealthCheckRequest{Service: "orders.v1.Orders"})
+		var out healthpb.HealthCheckResponse
+		if err := proto.Unmarshal(data, &out); err != nil || out.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+			t.Fatalf("text=%v: response %v %v (trailers %q)", text, &out, err, trailers)
+		}
+		if !strings.Contains(trailers, "grpc-status: 0\r\n") {
+			t.Errorf("text=%v: trailer frame = %q", text, trailers)
+		}
+		wantCT := "application/grpc-web+proto"
+		if text {
+			wantCT = "application/grpc-web-text+proto"
+		}
+		if got := hdr.Get("Content-Type"); got != wantCT {
+			t.Errorf("text=%v: content-type %q, want %q", text, got, wantCT)
+		}
+	}
+
+	// Upstream errors arrive as Trailers-Only and keep their status in headers.
+	_, _, hdr := grpcWebCall(t, url, false, &healthpb.HealthCheckRequest{Service: "missing"})
+	if hdr.Get("Grpc-Status") != "5" {
+		t.Errorf("NotFound status not propagated: %v", hdr)
+	}
+}
+
+func TestGRPCWebRequiresHTTP2Cluster(t *testing.T) {
+	_, _, err := config.Parse([]byte(basePrefix + `
+clusters: [{name: c, endpoints: [{address: "a:1"}]}]
+routes: [{name: r, match: {pathPrefix: /}, grpcWeb: true, backends: [{cluster: c}]}]
+`))
+	if err == nil || !strings.Contains(err.Error(), "grpcWeb requires an HTTP/2 cluster") {
+		t.Fatalf("got %v", err)
+	}
 }
 
 func TestGRPCProxyUnaryStreamingAndErrors(t *testing.T) {

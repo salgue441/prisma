@@ -21,6 +21,12 @@ func (c *Config) EffectivePolicy(r *Route) Policy {
 		if p.GraphQL != nil {
 			out.GraphQL = p.GraphQL
 		}
+		if p.CORS != nil {
+			out.CORS = p.CORS
+		}
+		if p.Compression != nil {
+			out.Compression = p.Compression
+		}
 		out.RateLimit = append(out.RateLimit, p.RateLimit...)
 	}
 	for _, name := range c.Global.Use {

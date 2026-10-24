@@ -24,6 +24,9 @@ import (
 	"prisma/internal/telemetry"
 )
 
+// version is set at build time: -ldflags "-X main.version=v0.2.0".
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "configs/prisma.yaml", "path to the configuration file")
 	validate := flag.Bool("validate", false, "validate the configuration and exit")
@@ -38,27 +41,42 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
-	cfg, version, err := config.LoadFile(*configPath)
+	cfg, cfgVersion, err := config.LoadFile(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid configuration %s:\n%v\n", *configPath, err)
 		os.Exit(1)
 	}
 	if *validate {
-		fmt.Printf("configuration %s is valid (version %s)\n", *configPath, version)
+		fmt.Printf("configuration %s is valid (version %s)\n", *configPath, cfgVersion)
 		return
 	}
-	if err := run(*configPath, cfg, version, *watch); err != nil {
+	slog.Info("starting prisma", "version", version)
+	if err := run(*configPath, cfg, cfgVersion, *watch); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(path string, cfg *config.Config, version string, watch bool) error {
+func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 	metrics := telemetry.NewMetrics()
 	access := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	gw := gateway.New(metrics, access)
 	defer gw.Close()
-	if err := gw.Apply(cfg, version); err != nil {
+	if cfg.Tracing != nil {
+		tp, err := telemetry.NewTracerProvider(context.Background(), cfg.Tracing, version)
+		if err != nil {
+			return fmt.Errorf("tracing: %w", err)
+		}
+		gw.SetTracerProvider(tp)
+		defer func() {
+			// Flush buffered spans before exiting.
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = tp.Shutdown(ctx)
+		}()
+		slog.Info("tracing enabled", "endpoint", cfg.Tracing.Endpoint, "sampleRatio", cfg.Tracing.SampleRatio)
+	}
+	if err := gw.Apply(cfg, cfgVersion); err != nil {
 		return err
 	}
 
@@ -75,7 +93,7 @@ func run(path string, cfg *config.Config, version string, watch bool) error {
 	}
 
 	var mu sync.Mutex
-	current := version
+	current := cfgVersion
 	reload := func() error {
 		mu.Lock()
 		defer mu.Unlock()
@@ -90,6 +108,9 @@ func run(path string, cfg *config.Config, version string, watch bool) error {
 		}
 		if !reflect.DeepEqual(next.Listeners, gw.Snapshot().Config.Listeners) {
 			slog.Warn("listener changes require a restart; only routes, clusters and policies were reloaded")
+		}
+		if !reflect.DeepEqual(next.Tracing, gw.Snapshot().Config.Tracing) {
+			slog.Warn("tracing changes require a restart")
 		}
 		if err := gw.Apply(next, v); err != nil {
 			metrics.ConfigReloads.WithLabelValues("failed").Inc()

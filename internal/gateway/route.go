@@ -12,7 +12,10 @@ import (
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
 	"prisma/internal/filters/authz"
+	"prisma/internal/filters/compression"
+	"prisma/internal/filters/cors"
 	"prisma/internal/filters/graphqlguard"
+	"prisma/internal/filters/grpcweb"
 	"prisma/internal/filters/headers"
 	"prisma/internal/filters/masking"
 	"prisma/internal/filters/ratelimit"
@@ -44,7 +47,9 @@ type routeHandler struct {
 }
 
 // buildRoute assembles the filter chain in phase order:
-// redirect → authn → authz → graphql guard → rate limit → rewrite/headers/masking.
+// redirect → cors → authn → authz → graphql guard → rate limit →
+// rewrite/headers/masking. CORS runs before authn because browsers send
+// preflights without credentials.
 func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	cfg := d.snap.Config
 	m := d.gw.metrics
@@ -55,6 +60,9 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if rc.Redirect != nil {
 		ch.Request = append(ch.Request, redirect.New(rc.Redirect, rc.Match))
 		return h, nil
+	}
+	if pol.CORS != nil {
+		ch.Request = append(ch.Request, cors.New(pol.CORS))
 	}
 	if pol.AuthN != nil {
 		f, err := authn.New(rc.Name, pol.AuthN, d.consumers, d.gw.jwks, m)
@@ -92,6 +100,17 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Request = append(ch.Request, f)
 		// Masking runs last on the way out (first registered = outermost).
 		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
+	}
+	if rc.GRPCWeb {
+		// Last before the proxy on the way in, first to see the upstream
+		// response on the way out, so other filters see native gRPC.
+		f := grpcweb.New()
+		ch.Request = append(ch.Request, f)
+		ch.Response = append(ch.Response, f)
+	}
+	if pol.Compression != nil {
+		// Outermost on the way out: compress the final (masked) body.
+		ch.Response = append([]pipeline.ResponseFilter{compression.New(pol.Compression)}, ch.Response...)
 	}
 
 	for _, b := range rc.Backends {
@@ -135,9 +154,7 @@ func (h *routeHandler) pick() *backend {
 // respond writes a gateway-generated response, including headers that
 // filters asked to add to every response (e.g. RateLimit-*).
 func respond(w http.ResponseWriter, c *pipeline.Context, res pipeline.Responder) {
-	for k, v := range c.ResponseHeaders {
-		w.Header()[k] = v
-	}
+	pipeline.MergeHeaders(w.Header(), c.ResponseHeaders)
 	res.Respond(w, c.Protocol)
 }
 
@@ -163,7 +180,9 @@ func (g *Gateway) newProxy(cl *upstream.Cluster, chain *pipeline.Chain, snap *Sn
 			case cl.Config.PreserveHost:
 				pr.Out.Host = pr.In.Host
 			default:
-				pr.Out.Host = ""
+				// Static clusters send the endpoint address; discovered
+				// clusters send the service name, not a pod IP.
+				pr.Out.Host = cl.DefaultHost
 			}
 			setForwarded(pr, c, snap)
 			pr.Out.Header.Set("X-Request-Id", c.RequestID)
@@ -178,9 +197,7 @@ func (g *Gateway) newProxy(cl *upstream.Cluster, chain *pipeline.Chain, snap *Sn
 			if err := chain.RunResponse(c, resp); err != nil {
 				return err
 			}
-			for k, v := range c.ResponseHeaders {
-				resp.Header[k] = v
-			}
+			pipeline.MergeHeaders(resp.Header, c.ResponseHeaders)
 			return nil
 		},
 		ErrorHandler: proxyError,

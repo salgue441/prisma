@@ -13,6 +13,7 @@ type Config struct {
 	Global     Global            `yaml:"global" json:"global"`
 	Admin      Admin             `yaml:"admin" json:"admin"`
 	Redis      *Redis            `yaml:"redis,omitempty" json:"redis,omitempty"`
+	Tracing    *Tracing          `yaml:"tracing,omitempty" json:"tracing,omitempty"`
 	Listeners  []Listener        `yaml:"listeners" json:"listeners"`
 	Clusters   []Cluster         `yaml:"clusters" json:"clusters"`
 	Policies   map[string]Policy `yaml:"policies,omitempty" json:"policies,omitempty"`
@@ -49,6 +50,15 @@ type Redis struct {
 	Prefix   string        `yaml:"prefix" json:"prefix"`
 }
 
+// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
+type Tracing struct {
+	Endpoint    string            `yaml:"endpoint" json:"endpoint"` // host:port of an OTLP/gRPC collector
+	Insecure    bool              `yaml:"insecure" json:"insecure"`
+	SampleRatio float64           `yaml:"sampleRatio" json:"sampleRatio"`
+	ServiceName string            `yaml:"serviceName" json:"serviceName"`
+	Headers     map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+}
+
 type Listener struct {
 	Name                 string        `yaml:"name" json:"name"`
 	Address              string        `yaml:"address" json:"address"`
@@ -76,7 +86,8 @@ type Certificate struct {
 type Cluster struct {
 	Name                string            `yaml:"name" json:"name"`
 	Protocol            string            `yaml:"protocol" json:"protocol"` // http1 | http2 | h2c
-	Endpoints           []Endpoint        `yaml:"endpoints" json:"endpoints"`
+	Endpoints           []Endpoint        `yaml:"endpoints,omitempty" json:"endpoints,omitempty"`
+	Discovery           *Discovery        `yaml:"discovery,omitempty" json:"discovery,omitempty"`
 	TLS                 *UpstreamTLS      `yaml:"tls,omitempty" json:"tls,omitempty"`
 	PreserveHost        bool              `yaml:"preserveHost" json:"preserveHost"`
 	ConnectTimeout      time.Duration     `yaml:"connectTimeout" json:"connectTimeout"`
@@ -90,6 +101,16 @@ type Cluster struct {
 type Endpoint struct {
 	Address string `yaml:"address" json:"address"`
 	Weight  int    `yaml:"weight" json:"weight"`
+}
+
+// Discovery resolves endpoints from DNS and refreshes them periodically.
+// "dns" uses A/AAAA records with a fixed port (e.g. Kubernetes headless
+// services); "srv" uses SRV records, which carry ports and weights.
+type Discovery struct {
+	Type     string        `yaml:"type" json:"type"`
+	Host     string        `yaml:"host" json:"host"`
+	Port     int           `yaml:"port,omitempty" json:"port,omitempty"`
+	Interval time.Duration `yaml:"interval" json:"interval"`
 }
 
 type UpstreamTLS struct {
@@ -134,20 +155,56 @@ type CircuitBreaker struct {
 // Policy is a reusable bundle of route-level filters. Routes embed the same
 // fields inline; route values override policy values.
 type Policy struct {
-	AuthN     *AuthN      `yaml:"authn,omitempty" json:"authn,omitempty"`
-	AuthZ     *AuthZ      `yaml:"authz,omitempty" json:"authz,omitempty"`
-	RateLimit []RateLimit `yaml:"rateLimit,omitempty" json:"rateLimit,omitempty"`
-	Masking   *Masking    `yaml:"masking,omitempty" json:"masking,omitempty"`
-	Headers   *Headers    `yaml:"headers,omitempty" json:"headers,omitempty"`
-	GraphQL   *GraphQL    `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	AuthN       *AuthN       `yaml:"authn,omitempty" json:"authn,omitempty"`
+	AuthZ       *AuthZ       `yaml:"authz,omitempty" json:"authz,omitempty"`
+	RateLimit   []RateLimit  `yaml:"rateLimit,omitempty" json:"rateLimit,omitempty"`
+	Masking     *Masking     `yaml:"masking,omitempty" json:"masking,omitempty"`
+	Headers     *Headers     `yaml:"headers,omitempty" json:"headers,omitempty"`
+	GraphQL     *GraphQL     `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
+	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
+}
+
+type Compression struct {
+	// Algorithms in server preference order: zstd, gzip. Default: [zstd, gzip].
+	Algorithms []string `yaml:"algorithms,omitempty" json:"algorithms,omitempty"`
+	MinBytes   ByteSize `yaml:"minBytes" json:"minBytes"`
+	// Types are compressible media types; a trailing "/*" matches a family.
+	Types []string `yaml:"types,omitempty" json:"types,omitempty"`
+}
+
+type CORS struct {
+	// AllowOrigins entries are exact origins, "*", or wildcard subdomains
+	// such as "https://*.example.com".
+	AllowOrigins     []string      `yaml:"allowOrigins" json:"allowOrigins"`
+	AllowMethods     []string      `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
+	AllowHeaders     []string      `yaml:"allowHeaders,omitempty" json:"allowHeaders,omitempty"`
+	ExposeHeaders    []string      `yaml:"exposeHeaders,omitempty" json:"exposeHeaders,omitempty"`
+	AllowCredentials bool          `yaml:"allowCredentials" json:"allowCredentials"`
+	MaxAge           time.Duration `yaml:"maxAge" json:"maxAge"`
 }
 
 type AuthN struct {
-	Mode     string  `yaml:"mode,omitempty" json:"mode,omitempty"` // any (default) | all
-	Optional bool    `yaml:"optional" json:"optional"`
-	JWT      *JWT    `yaml:"jwt,omitempty" json:"jwt,omitempty"`
-	APIKey   *APIKey `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
-	MTLS     *MTLS   `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+	Mode          string         `yaml:"mode,omitempty" json:"mode,omitempty"` // any (default) | all
+	Optional      bool           `yaml:"optional" json:"optional"`
+	JWT           *JWT           `yaml:"jwt,omitempty" json:"jwt,omitempty"`
+	Introspection *Introspection `yaml:"introspection,omitempty" json:"introspection,omitempty"`
+	APIKey        *APIKey        `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
+	MTLS          *MTLS          `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+}
+
+// Introspection validates opaque bearer tokens with an RFC 7662 endpoint.
+type Introspection struct {
+	Endpoint     string        `yaml:"endpoint" json:"endpoint"`
+	ClientID     string        `yaml:"clientId" json:"clientId"`
+	ClientSecret string        `yaml:"clientSecret,omitempty" json:"clientSecret,omitempty"`
+	Audiences    []string      `yaml:"audiences,omitempty" json:"audiences,omitempty"`
+	Issuer       string        `yaml:"issuer,omitempty" json:"issuer,omitempty"`
+	CacheTTL     time.Duration `yaml:"cacheTTL" json:"cacheTTL"`
+	// NegativeCacheTTL caches inactive tokens so replayed bad tokens don't
+	// hammer the identity provider.
+	NegativeCacheTTL time.Duration `yaml:"negativeCacheTTL" json:"negativeCacheTTL"`
+	Timeout          time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type JWT struct {
@@ -246,9 +303,11 @@ type Route struct {
 
 	Policy `yaml:",inline" json:",inline"`
 
-	Redirect     *Redirect      `yaml:"redirect,omitempty" json:"redirect,omitempty"`
-	Rewrite      *Rewrite       `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
-	Retries      *Retries       `yaml:"retries,omitempty" json:"retries,omitempty"`
+	Redirect *Redirect `yaml:"redirect,omitempty" json:"redirect,omitempty"`
+	Rewrite  *Rewrite  `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
+	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
+	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
+	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
 	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`

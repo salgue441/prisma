@@ -13,12 +13,18 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"prisma/internal/config"
 	"prisma/internal/gwerr"
@@ -30,23 +36,45 @@ import (
 const maxEjection = 5 * time.Minute
 
 type Cluster struct {
-	Name      string
-	Config    config.Cluster
-	Scheme    string
-	Endpoints []*Endpoint
+	Name   string
+	Config config.Cluster
+	Scheme string
+	// DefaultHost is the Host header sent upstream when neither the route
+	// nor preserveHost sets one. Empty means "use the endpoint address".
+	DefaultHost string
+
+	// set is swapped atomically when discovery changes the endpoints, so
+	// requests always see a consistent endpoints+balancer pair.
+	set atomic.Pointer[endpointSet]
 
 	transport *http.Transport
-	balancer  Balancer
 	breaker   *Breaker
 	metrics   *telemetry.Metrics
+	resolver  Resolver
 
 	active   atomic.Int64
 	retrying atomic.Int64
-	cancel   context.CancelFunc
+
+	mu     sync.Mutex // guards the lifecycle fields below
+	ctx    context.Context
+	cancel context.CancelFunc
+	checks map[*Endpoint]context.CancelFunc
+}
+
+type endpointSet struct {
+	endpoints []*Endpoint
+	balancer  Balancer
+}
+
+// Resolver is the subset of *net.Resolver used for service discovery.
+type Resolver interface {
+	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
+	LookupSRV(ctx context.Context, service, proto, name string) (string, []*net.SRV, error)
 }
 
 func NewCluster(cfg config.Cluster, m *telemetry.Metrics) (*Cluster, error) {
-	c := &Cluster{Name: cfg.Name, Config: cfg, Scheme: "http", metrics: m}
+	c := &Cluster{Name: cfg.Name, Config: cfg, Scheme: "http", metrics: m, resolver: net.DefaultResolver,
+		checks: map[*Endpoint]context.CancelFunc{}}
 	if cfg.TLS != nil || cfg.Protocol == "http2" {
 		c.Scheme = "https"
 	}
@@ -55,12 +83,13 @@ func NewCluster(cfg config.Cluster, m *telemetry.Metrics) (*Cluster, error) {
 		return nil, fmt.Errorf("cluster %s: %w", cfg.Name, err)
 	}
 	c.transport = t
-	for _, e := range cfg.Endpoints {
-		ep := &Endpoint{Address: e.Address, Weight: e.Weight}
-		ep.healthy.Store(true)
-		c.Endpoints = append(c.Endpoints, ep)
+	if d := cfg.Discovery; d != nil {
+		c.DefaultHost = d.Host
+		if d.Type == "dns" {
+			c.DefaultHost = net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
+		}
 	}
-	c.balancer = newBalancer(cfg.LoadBalancer, c.Endpoints)
+	c.setEndpoints(cfg.Endpoints)
 	if cfg.CircuitBreaker != nil {
 		c.breaker = newBreaker(*cfg.CircuitBreaker, func(open bool) {
 			v := 0.0
@@ -100,8 +129,15 @@ func newTransport(cfg config.Cluster) (*http.Transport, error) {
 	t.Protocols = p
 
 	tc := &tls.Config{MinVersion: tls.VersionTLS12}
-	if u := cfg.TLS; u != nil {
+	if cfg.Discovery != nil {
+		// Discovered endpoints are IPs; verify certificates against the
+		// service name instead.
+		tc.ServerName = cfg.Discovery.Host
+	}
+	if u := cfg.TLS; u != nil && u.ServerName != "" {
 		tc.ServerName = u.ServerName
+	}
+	if u := cfg.TLS; u != nil {
 		tc.InsecureSkipVerify = u.InsecureSkipVerify
 		if u.CAFile != "" {
 			pem, err := os.ReadFile(u.CAFile)
@@ -126,54 +162,139 @@ func newTransport(cfg config.Cluster) (*http.Transport, error) {
 	return t, nil
 }
 
-// Start launches background health checks.
-func (c *Cluster) Start() {
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancel = cancel
-	for _, ep := range c.Endpoints {
-		c.reportHealth(ep)
+// Endpoints returns the current endpoint list. Callers must not modify it.
+func (c *Cluster) Endpoints() []*Endpoint { return c.set.Load().endpoints }
+
+// setEndpoints installs a new endpoint list. Endpoints whose address and
+// weight are unchanged keep their identity, so health, ejection and latency
+// state survive discovery refreshes. When the cluster is running, health
+// checks are started for new endpoints and stopped for removed ones.
+func (c *Cluster) setEndpoints(list []config.Endpoint) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev := map[string]*Endpoint{}
+	if s := c.set.Load(); s != nil {
+		for _, e := range s.endpoints {
+			prev[e.Address] = e
+		}
 	}
-	if c.Config.HealthCheck != nil {
-		c.runHealthChecks(ctx)
+	next := make([]*Endpoint, 0, len(list))
+	for _, e := range list {
+		old, ok := prev[e.Address]
+		switch {
+		case ok && old.Weight == e.Weight:
+			next = append(next, old)
+			delete(prev, e.Address)
+			continue
+		case ok:
+			// Weight changed: new identity (weights are read without locks),
+			// but keep the observed health.
+			ep := &Endpoint{Address: e.Address, Weight: e.Weight}
+			ep.healthy.Store(old.Healthy())
+			next = append(next, ep)
+		default:
+			ep := &Endpoint{Address: e.Address, Weight: e.Weight}
+			ep.healthy.Store(true)
+			next = append(next, ep)
+		}
+	}
+	c.set.Store(&endpointSet{endpoints: next, balancer: newBalancer(c.Config.LoadBalancer, next)})
+	if c.ctx == nil {
+		return // not started; Start reports and checks everything
+	}
+	for _, old := range prev {
+		if !slices.ContainsFunc(next, func(e *Endpoint) bool { return e.Address == old.Address }) {
+			c.metrics.EndpointHealthy.DeleteLabelValues(c.Name, old.Address)
+		}
+		c.stopCheckLocked(old)
+	}
+	for _, ep := range next {
+		if _, running := c.checks[ep]; !running {
+			c.startCheckLocked(ep)
+		}
 	}
 }
 
-// Close stops health checks and, after grace, closes idle connections.
-// In-flight requests keep their connections until they finish.
+// Start launches health checks and, for discovered clusters, resolves the
+// endpoints once synchronously and then keeps refreshing them.
+func (c *Cluster) Start() {
+	c.mu.Lock()
+	c.ctx, c.cancel = context.WithCancel(context.Background())
+	for _, ep := range c.Endpoints() {
+		c.startCheckLocked(ep)
+	}
+	ctx := c.ctx
+	c.mu.Unlock()
+	if c.Config.Discovery != nil {
+		c.refresh(ctx)
+		go c.discoveryLoop(ctx)
+	}
+}
+
+func (c *Cluster) startCheckLocked(ep *Endpoint) {
+	c.reportHealth(ep)
+	if c.Config.HealthCheck == nil {
+		c.checks[ep] = func() {}
+		return
+	}
+	ctx, cancel := context.WithCancel(c.ctx)
+	c.checks[ep] = cancel
+	go c.checkLoop(ctx, ep)
+}
+
+func (c *Cluster) stopCheckLocked(ep *Endpoint) {
+	if cancel, ok := c.checks[ep]; ok {
+		cancel()
+		delete(c.checks, ep)
+	}
+}
+
+// Close stops health checks and discovery and, after grace, closes idle
+// connections. In-flight requests keep their connections until they finish.
 func (c *Cluster) Close(grace time.Duration) {
+	c.mu.Lock()
 	if c.cancel != nil {
 		c.cancel()
 	}
+	c.checks = map[*Endpoint]context.CancelFunc{}
+	c.mu.Unlock()
 	time.AfterFunc(grace, c.transport.CloseIdleConnections)
-	for _, ep := range c.Endpoints {
+	for _, ep := range c.Endpoints() {
 		c.metrics.EndpointHealthy.DeleteLabelValues(c.Name, ep.Address)
 	}
 }
 
 func (c *Cluster) BreakerOpen() bool { return c.breaker != nil && c.breaker.Open() }
 
-// pick selects an endpoint, skipping unhealthy, ejected and already-tried ones.
-// When outlier detection has ejected every healthy endpoint, ejections are
-// ignored rather than failing the whole cluster (panic routing).
+// pick selects a healthy endpoint, relaxing constraints in order until one
+// qualifies:
+//  1. not ejected and not yet tried by this request
+//  2. not yet tried, ignoring ejections (panic routing: outlier detection
+//     must never take down the whole cluster)
+//  3. any healthy endpoint, so retries still work when every endpoint was
+//     already tried (e.g. single-endpoint clusters)
+//
+// Endpoints failing active health checks are never picked.
 func (c *Cluster) pick(r *http.Request, tried []*Endpoint) *Endpoint {
 	now := time.Now()
-	avail := make([]*Endpoint, 0, len(c.Endpoints))
-	for _, e := range c.Endpoints {
-		if e.Healthy() && !e.Ejected(now) && !slices.Contains(tried, e) {
-			avail = append(avail, e)
-		}
+	set := c.set.Load()
+	filters := []func(*Endpoint) bool{
+		func(e *Endpoint) bool { return !e.Ejected(now) && !slices.Contains(tried, e) },
+		func(e *Endpoint) bool { return !slices.Contains(tried, e) },
+		func(*Endpoint) bool { return true },
 	}
-	if len(avail) == 0 {
-		for _, e := range c.Endpoints {
-			if e.Healthy() && !slices.Contains(tried, e) {
+	avail := make([]*Endpoint, 0, len(set.endpoints))
+	for _, ok := range filters {
+		for _, e := range set.endpoints {
+			if e.Healthy() && ok(e) {
 				avail = append(avail, e)
 			}
 		}
+		if len(avail) > 0 {
+			return set.balancer.Pick(r, avail)
+		}
 	}
-	if len(avail) == 0 {
-		return nil
-	}
-	return c.balancer.Pick(r, avail)
+	return nil
 }
 
 // RetryPolicy is the compiled form of a route's retries config.
@@ -267,10 +388,22 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 			done = d
 		}
 
-		out := req.WithContext(ctx)
+		// The tracer comes from the server span, so tracing costs nothing
+		// when it is disabled (noop provider).
+		actx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("prisma").Start(ctx, "upstream "+c.Name,
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("server.address", ep.Address),
+				attribute.String("prisma.cluster", c.Name),
+				attribute.Int("prisma.attempt", attempt+1),
+			))
+		out := req.WithContext(actx)
 		u := *req.URL
 		u.Scheme, u.Host = c.Scheme, ep.Address
 		out.URL = &u
+		if span.SpanContext().IsValid() {
+			telemetry.Propagator.Inject(actx, propagation.HeaderCarrier(out.Header))
+		}
 
 		ep.inflight.Add(1)
 		start := time.Now()
@@ -278,6 +411,7 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		latency := time.Since(start)
 
 		failure, retryable := classify(resp, err, policy)
+		recordAttempt(span, resp, err, failure)
 		if err == nil {
 			ep.observeLatency(latency)
 		}
@@ -299,16 +433,37 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !canRetry {
 			if err != nil {
 				ep.inflight.Add(-1)
+				span.End()
 				return nil, err
 			}
-			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() { ep.inflight.Add(-1) }}
+			// The span covers the whole response stream, not just headers.
+			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() {
+				ep.inflight.Add(-1)
+				span.End()
+			}}
 			return resp, nil
 		}
 		ep.inflight.Add(-1)
+		span.End()
 		if resp != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 		}
+	}
+}
+
+func recordAttempt(span trace.Span, resp *http.Response, err error, failure bool) {
+	if !span.IsRecording() {
+		return
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if failure {
+		span.SetStatus(codes.Error, resp.Status)
 	}
 }
 
@@ -353,13 +508,14 @@ func (c *Cluster) outlier(ep *Endpoint, failure bool) {
 	}
 	ep.consecFailures.Store(0)
 	now := time.Now()
+	eps := c.Endpoints()
 	ejected := 0
-	for _, e := range c.Endpoints {
+	for _, e := range eps {
 		if e.Ejected(now) {
 			ejected++
 		}
 	}
-	if (ejected+1)*100 > od.MaxEjectionPercent*len(c.Endpoints) {
+	if (ejected+1)*100 > od.MaxEjectionPercent*len(eps) {
 		return
 	}
 	n := ep.ejections.Add(1)
@@ -409,8 +565,9 @@ type EndpointStatus struct {
 
 func (c *Cluster) Status() []EndpointStatus {
 	now := time.Now()
-	out := make([]EndpointStatus, 0, len(c.Endpoints))
-	for _, e := range c.Endpoints {
+	eps := c.Endpoints()
+	out := make([]EndpointStatus, 0, len(eps))
+	for _, e := range eps {
 		out = append(out, EndpointStatus{
 			Address: e.Address, Weight: e.Weight, Healthy: e.Healthy(), Ejected: e.Ejected(now),
 			Inflight: e.Inflight(), EWMAms: float64(e.EWMA()) / float64(time.Millisecond),

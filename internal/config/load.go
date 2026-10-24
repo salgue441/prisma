@@ -96,6 +96,14 @@ func (c *Config) ApplyDefaults() {
 			c.Redis.Prefix = "prisma:"
 		}
 	}
+	if t := c.Tracing; t != nil {
+		if t.ServiceName == "" {
+			t.ServiceName = "prisma"
+		}
+		if t.SampleRatio == 0 {
+			t.SampleRatio = 1
+		}
+	}
 	for i := range c.Listeners {
 		l := &c.Listeners[i]
 		if len(l.Protocols) == 0 {
@@ -137,6 +145,14 @@ func (c *Config) ApplyDefaults() {
 				cl.LoadBalancer.Policy = "round_robin"
 			} else {
 				cl.LoadBalancer.Policy = "p2c_ewma"
+			}
+		}
+		if d := cl.Discovery; d != nil {
+			if d.Type == "" {
+				d.Type = "dns"
+			}
+			if d.Interval == 0 {
+				d.Interval = 30 * time.Second
 			}
 		}
 		for j := range cl.Endpoints {
@@ -234,6 +250,9 @@ func (c *Config) Redacted() *Config {
 	redactPolicy := func(p *Policy) {
 		if p.AuthN != nil && p.AuthN.JWT != nil && p.AuthN.JWT.Secret != "" {
 			p.AuthN.JWT.Secret = r
+		}
+		if p.AuthN != nil && p.AuthN.Introspection != nil && p.AuthN.Introspection.ClientSecret != "" {
+			p.AuthN.Introspection.ClientSecret = r
 		}
 		if p.Masking != nil && p.Masking.HashKey != "" {
 			p.Masking.HashKey = r

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Validate performs semantic validation. It reports every problem it finds,
@@ -27,6 +29,15 @@ func (c *Config) Validate() error {
 	for _, name := range c.Global.Use {
 		if _, ok := c.Policies[name]; !ok {
 			add("global.use: unknown policy %q", name)
+		}
+	}
+
+	if t := c.Tracing; t != nil {
+		if _, _, err := net.SplitHostPort(t.Endpoint); err != nil {
+			add("tracing.endpoint must be host:port, got %q", t.Endpoint)
+		}
+		if t.SampleRatio < 0 || t.SampleRatio > 1 {
+			add("tracing.sampleRatio must be between 0 and 1")
 		}
 	}
 
@@ -70,7 +81,9 @@ func (c *Config) Validate() error {
 	}
 
 	clusters := map[string]bool{}
+	clusterProto := map[string]string{}
 	for i, cl := range c.Clusters {
+		clusterProto[cl.Name] = cl.Protocol
 		where := fmt.Sprintf("clusters[%d] (%s)", i, cl.Name)
 		if cl.Name == "" {
 			add("clusters[%d]: name is required", i)
@@ -84,8 +97,27 @@ func (c *Config) Validate() error {
 		if cl.Protocol == "h2c" && cl.TLS != nil {
 			add("%s: h2c cannot be combined with tls", where)
 		}
-		if len(cl.Endpoints) == 0 {
-			add("%s: at least one endpoint is required", where)
+		switch d := cl.Discovery; {
+		case d == nil && len(cl.Endpoints) == 0:
+			add("%s: endpoints or discovery is required", where)
+		case d != nil && len(cl.Endpoints) > 0:
+			add("%s: endpoints and discovery are mutually exclusive", where)
+		case d != nil:
+			if d.Host == "" {
+				add("%s: discovery.host is required", where)
+			}
+			switch d.Type {
+			case "dns":
+				if d.Port <= 0 || d.Port > 65535 {
+					add("%s: discovery type dns requires a port", where)
+				}
+			case "srv":
+			default:
+				add("%s: discovery.type must be dns or srv", where)
+			}
+			if d.Interval < time.Second {
+				add("%s: discovery.interval must be at least 1s", where)
+			}
 		}
 		for _, ep := range cl.Endpoints {
 			if _, _, err := net.SplitHostPort(ep.Address); err != nil {
@@ -196,6 +228,9 @@ func (c *Config) Validate() error {
 			if b.Weight < 0 {
 				add("%s: backend weight must be positive", where)
 			}
+			if r.GRPCWeb && clusters[b.Cluster] && clusterProto[b.Cluster] == "http1" {
+				add("%s: grpcWeb requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
+			}
 		}
 		if rw := r.Rewrite; rw != nil {
 			if rw.PathRegex != "" {
@@ -229,8 +264,16 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		if !slices.Contains([]string{"", "any", "all"}, a.Mode) {
 			add("%s: authn.mode must be any or all", where)
 		}
-		if a.JWT == nil && a.APIKey == nil && a.MTLS == nil {
-			add("%s: authn requires at least one provider (jwt, apiKey, mtls)", where)
+		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil {
+			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls)", where)
+		}
+		if in := a.Introspection; in != nil {
+			if u, err := url.Parse(in.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				add("%s: authn.introspection.endpoint must be an http(s) URL", where)
+			}
+			if in.ClientID == "" {
+				add("%s: authn.introspection.clientId is required", where)
+			}
 		}
 		if j := a.JWT; j != nil {
 			if (j.JWKSURI == "") == (j.Secret == "") {
@@ -277,6 +320,30 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		}
 		if !slices.Contains([]string{"", "graphql"}, rl.Cost) {
 			add("%s: cost must be empty or graphql", w)
+		}
+	}
+	if cors := p.CORS; cors != nil {
+		if len(cors.AllowOrigins) == 0 {
+			add("%s: cors.allowOrigins is required", where)
+		}
+		for _, o := range cors.AllowOrigins {
+			switch {
+			case o == "*":
+				if cors.AllowCredentials {
+					add("%s: cors: allowCredentials cannot be combined with origin *", where)
+				}
+			case !strings.HasPrefix(o, "http://") && !strings.HasPrefix(o, "https://"):
+				add("%s: cors origin %q must start with http:// or https://", where, o)
+			case strings.Count(o, "*") > 1 || (strings.Contains(o, "*") && !strings.Contains(o, "://*.")):
+				add("%s: cors origin %q: wildcards must look like https://*.example.com", where, o)
+			}
+		}
+	}
+	if cp := p.Compression; cp != nil {
+		for _, a := range cp.Algorithms {
+			if a != "gzip" && a != "zstd" {
+				add("%s: compression: unknown algorithm %q (gzip, zstd)", where, a)
+			}
 		}
 	}
 	if m := p.Masking; m != nil {

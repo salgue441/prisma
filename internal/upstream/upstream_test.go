@@ -101,17 +101,37 @@ func TestBreakerOpensAndRecovers(t *testing.T) {
 	}
 }
 
-func TestOutlierEjectionRespectsMaxPercent(t *testing.T) {
-	c := &Cluster{
-		Config:    config.Cluster{OutlierDetection: &config.OutlierDetection{ConsecutiveFailures: 1, BaseEjection: time.Minute, MaxEjectionPercent: 50}},
-		Endpoints: endpoints(1, 1, 1),
+func TestPickRelaxation(t *testing.T) {
+	c := testCluster(config.Cluster{}, endpoints(1, 1))
+	a, b := c.Endpoints()[0], c.Endpoints()[1]
+	if got := c.pick(nil, []*Endpoint{a}); got != b {
+		t.Error("should prefer an untried endpoint")
 	}
-	for _, e := range c.Endpoints {
+	b.ejectedUntil.Store(time.Now().Add(time.Minute).UnixNano())
+	if got := c.pick(nil, []*Endpoint{a}); got != b {
+		t.Error("should ignore ejection before re-trying an endpoint")
+	}
+	if got := c.pick(nil, []*Endpoint{a, b}); got == nil {
+		t.Error("should retry an already-tried endpoint rather than fail")
+	}
+	a.healthy.Store(false)
+	b.healthy.Store(false)
+	if got := c.pick(nil, nil); got != nil {
+		t.Error("must never pick endpoints failing active health checks")
+	}
+}
+
+func TestOutlierEjectionRespectsMaxPercent(t *testing.T) {
+	c := testCluster(
+		config.Cluster{OutlierDetection: &config.OutlierDetection{ConsecutiveFailures: 1, BaseEjection: time.Minute, MaxEjectionPercent: 50}},
+		endpoints(1, 1, 1),
+	)
+	for _, e := range c.Endpoints() {
 		c.outlier(e, true)
 	}
 	now := time.Now()
 	ejected := 0
-	for _, e := range c.Endpoints {
+	for _, e := range c.Endpoints() {
 		if e.Ejected(now) {
 			ejected++
 		}
