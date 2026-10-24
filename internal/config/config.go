@@ -62,14 +62,25 @@ type Tracing struct {
 }
 
 type Listener struct {
-	Name                 string        `yaml:"name" json:"name"`
-	Address              string        `yaml:"address" json:"address"`
-	Protocols            []string      `yaml:"protocols" json:"protocols"` // http1, http2, h2c
-	TLS                  *ListenerTLS  `yaml:"tls,omitempty" json:"tls,omitempty"`
-	ReadHeaderTimeout    time.Duration `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
-	IdleTimeout          time.Duration `yaml:"idleTimeout" json:"idleTimeout"`
-	MaxHeaderBytes       ByteSize      `yaml:"maxHeaderBytes" json:"maxHeaderBytes"`
-	MaxConcurrentStreams int           `yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
+	Name                 string         `yaml:"name" json:"name"`
+	Address              string         `yaml:"address" json:"address"`
+	Protocols            []string       `yaml:"protocols" json:"protocols"` // http1, http2, h2c
+	TLS                  *ListenerTLS   `yaml:"tls,omitempty" json:"tls,omitempty"`
+	ReadHeaderTimeout    time.Duration  `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
+	IdleTimeout          time.Duration  `yaml:"idleTimeout" json:"idleTimeout"`
+	MaxHeaderBytes       ByteSize       `yaml:"maxHeaderBytes" json:"maxHeaderBytes"`
+	MaxConcurrentStreams int            `yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
+	ProxyProtocol        *ProxyProtocol `yaml:"proxyProtocol,omitempty" json:"proxyProtocol,omitempty"`
+}
+
+// ProxyProtocol accepts HAProxy PROXY v1/v2 headers from load balancers.
+type ProxyProtocol struct {
+	// TrustedCIDRs may send headers (empty: every peer). Other peers are
+	// served as plain connections and cannot spoof their address.
+	TrustedCIDRs []string `yaml:"trustedCIDRs,omitempty" json:"trustedCIDRs,omitempty"`
+	// Optional accepts trusted connections without a header.
+	Optional      bool          `yaml:"optional" json:"optional"`
+	HeaderTimeout time.Duration `yaml:"headerTimeout" json:"headerTimeout"`
 }
 
 type ListenerTLS struct {
