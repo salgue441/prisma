@@ -181,6 +181,35 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	plugins := map[string]bool{}
+	for i, pl := range c.Plugins {
+		if pl.Name == "" {
+			add("plugins[%d]: name is required", i)
+		} else if plugins[pl.Name] {
+			add("plugins[%d]: duplicate plugin %q", i, pl.Name)
+		}
+		plugins[pl.Name] = true
+		if pl.File == "" {
+			add("plugins[%d] (%s): file is required", i, pl.Name)
+		}
+		if pl.Instances < 0 {
+			add("plugins[%d] (%s): instances must not be negative", i, pl.Name)
+		}
+	}
+	checkPlugins := func(where string, names []string) {
+		for _, n := range names {
+			if !plugins[n] {
+				add("%s: unknown plugin %q", where, n)
+			}
+		}
+	}
+	for name, p := range c.Policies {
+		checkPlugins("policies."+name, p.Plugins)
+	}
+	for i := range c.Routes {
+		checkPlugins(fmt.Sprintf("routes[%d] (%s)", i, c.Routes[i].Name), c.Routes[i].Plugins)
+	}
+
 	routes := map[string]bool{}
 	if len(c.Routes) == 0 {
 		add("routes: at least one route is required")

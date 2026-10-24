@@ -1,5 +1,7 @@
 package config
 
+import "slices"
+
 // EffectivePolicy merges global policies, then the route's referenced policies,
 // then the route's inline settings. Later layers override earlier ones; rate
 // limits accumulate so a route can add limits on top of a shared baseline.
@@ -34,6 +36,11 @@ func (c *Config) EffectivePolicy(r *Route) Policy {
 			out.Compression = p.Compression
 		}
 		out.RateLimit = append(out.RateLimit, p.RateLimit...)
+		for _, name := range p.Plugins {
+			if !slices.Contains(out.Plugins, name) {
+				out.Plugins = append(out.Plugins, name)
+			}
+		}
 	}
 	for _, name := range c.Global.Use {
 		layer(c.Policies[name])

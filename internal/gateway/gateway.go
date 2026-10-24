@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/tetratelabs/wazero"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
@@ -34,6 +35,7 @@ type Snapshot struct {
 	Config   *config.Config
 	Router   *router.Router
 	Clusters map[string]*upstream.Cluster
+	Plugins  map[string]*loadedPlugin
 	LoadedAt time.Time
 
 	trusted []netip.Prefix
@@ -57,6 +59,9 @@ type Gateway struct {
 	tracer  trace.Tracer
 	tracing bool
 
+	wasmCache wazero.CompilationCache
+	plugins   map[string]*loadedPlugin // guarded by mu
+
 	snap  atomic.Pointer[Snapshot]
 	ready atomic.Bool
 
@@ -72,8 +77,10 @@ func New(m *telemetry.Metrics, accessLog *slog.Logger) *Gateway {
 	}
 	return &Gateway{
 		metrics: m, access: accessLog, jwks: authn.NewRegistry(), local: ratelimit.NewLocalStore(),
-		cache:  cache.NewStore(64 << 20),
-		tracer: noop.NewTracerProvider().Tracer(""),
+		cache:     cache.NewStore(64 << 20),
+		tracer:    noop.NewTracerProvider().Tracer(""),
+		wasmCache: wazero.NewCompilationCache(),
+		plugins:   map[string]*loadedPlugin{},
 	}
 }
 
@@ -126,6 +133,7 @@ func (g *Gateway) Apply(cfg *config.Config, version string) error {
 	g.cache.SetMax(int64(cfg.Global.CacheMaxBytes))
 	g.snap.Store(snap)
 	g.ready.Store(true)
+	g.retirePlugins(snap.Plugins)
 
 	if redisChanged {
 		if g.redis != nil {
@@ -173,6 +181,20 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 		snap.Clusters[cc.Name] = cl
 	}
 
+	plugins, newPlugins, err := g.loadPlugins(cfg.Plugins)
+	ok := false
+	defer func() {
+		if !ok {
+			for _, p := range newPlugins {
+				p.Close()
+			}
+		}
+	}()
+	if err != nil {
+		return nil, created, err
+	}
+	snap.Plugins = plugins
+
 	var redisStore ratelimit.Store
 	if rc != nil {
 		redisStore = ratelimit.NewRedisStore(rc, cfg.Redis.Prefix, cfg.Redis.Timeout)
@@ -204,6 +226,7 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 		return nil, created, err
 	}
 	snap.Router = router.New(routes)
+	ok = true
 	return snap, created, nil
 }
 
@@ -232,6 +255,9 @@ func (g *Gateway) Close() {
 		for _, c := range s.Clusters {
 			c.Close(0)
 		}
+	}
+	for _, p := range g.plugins {
+		p.plugin.Close()
 	}
 	if g.redis != nil {
 		g.redis.Close()
