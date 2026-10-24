@@ -322,6 +322,11 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 			add("%s: cost must be empty or graphql", w)
 		}
 	}
+	if ea := p.ExtAuthz; ea != nil {
+		if u, err := url.Parse(ea.URL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			add("%s: extAuthz.url must be an http(s) URL", where)
+		}
+	}
 	if cors := p.CORS; cors != nil {
 		if len(cors.AllowOrigins) == 0 {
 			add("%s: cors.allowOrigins is required", where)

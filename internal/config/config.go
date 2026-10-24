@@ -161,6 +161,7 @@ type Policy struct {
 	Masking     *Masking     `yaml:"masking,omitempty" json:"masking,omitempty"`
 	Headers     *Headers     `yaml:"headers,omitempty" json:"headers,omitempty"`
 	GraphQL     *GraphQL     `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	ExtAuthz    *ExtAuthz    `yaml:"extAuthz,omitempty" json:"extAuthz,omitempty"`
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
 }
@@ -171,6 +172,24 @@ type Compression struct {
 	MinBytes   ByteSize `yaml:"minBytes" json:"minBytes"`
 	// Types are compressible media types; a trailing "/*" matches a family.
 	Types []string `yaml:"types,omitempty" json:"types,omitempty"`
+}
+
+// ExtAuthz delegates the allow/deny decision to an external HTTP service,
+// compatible with Envoy's HTTP ext_authz contract: the gateway sends the
+// request method, path and selected headers (no body) to url+path; a 2xx
+// response allows the request, anything else denies it.
+type ExtAuthz struct {
+	URL     string        `yaml:"url" json:"url"`
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	// FailOpen allows requests when the authorization service is unreachable.
+	FailOpen bool `yaml:"failOpen" json:"failOpen"`
+	// AllowedHeaders are copied from the client request to the check request.
+	// Authorization, Cookie and X-Request-Id are always included.
+	AllowedHeaders []string `yaml:"allowedHeaders,omitempty" json:"allowedHeaders,omitempty"`
+	// UpstreamHeaders are copied from an allow response onto the upstream request.
+	UpstreamHeaders []string `yaml:"upstreamHeaders,omitempty" json:"upstreamHeaders,omitempty"`
+	// ClientHeaders are copied from a deny response onto the client response.
+	ClientHeaders []string `yaml:"clientHeaders,omitempty" json:"clientHeaders,omitempty"`
 }
 
 type CORS struct {
