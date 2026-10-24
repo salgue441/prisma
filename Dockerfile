@@ -4,7 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/prisma ./cmd/prisma
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/prisma ./cmd/prisma
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/prisma /prisma

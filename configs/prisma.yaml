@@ -41,6 +41,8 @@ clusters:
 
   - name: graph
     endpoints: [{address: "localhost:9002"}]
+    # In Kubernetes, discover pods through a headless service instead:
+    # discovery: {type: dns, host: graph.default.svc.cluster.local, port: 9002, interval: 15s}
 
   - name: inventory-grpc
     protocol: h2c
@@ -67,6 +69,15 @@ policies:
         - {detector: email, strategy: hash}
       unlessScope: pii:read
       onFailure: closed
+  # Lets browser apps call the API (including gRPC-Web) and compresses responses.
+  browser:
+    cors:
+      allowOrigins: ["http://localhost:3000", "https://*.example.com"]
+      allowHeaders: [authorization, content-type, x-api-key, x-grpc-web, x-user-agent]
+      exposeHeaders: [x-request-id, grpc-status, grpc-message, ratelimit-remaining]
+      allowCredentials: true
+      maxAge: 10m
+    compression: {algorithms: [zstd, gzip], minBytes: 1KiB}
 
 consumers:
   - name: demo-partner
@@ -80,7 +91,7 @@ routes:
 
   - name: orders
     match: {pathPrefix: /api/v1/orders}
-    use: [auth, standard-limits, pii]
+    use: [browser, auth, standard-limits, pii]
     authz:
       scopes: [orders:read]
       methods: {POST: [orders:write], DELETE: [orders:write]}
@@ -94,7 +105,7 @@ routes:
   - name: graphql
     type: graphql
     match: {path: /graphql}
-    use: [auth, pii]
+    use: [browser, auth, pii]
     graphql: {maxDepth: 8, maxAliases: 20, maxCost: 500, blockIntrospection: false}
     rateLimit:
       - {name: query-cost, key: [consumer], limit: 2000, period: 1m, cost: graphql}
@@ -103,8 +114,9 @@ routes:
   - name: inventory
     type: grpc
     match: {grpcService: grpc.health.v1.Health}
-    use: [auth, standard-limits]
+    use: [browser, auth, standard-limits]
     authz: {scopes: [inventory:read]}
+    grpcWeb: true   # browsers can call this service with gRPC-Web
     backends: [{cluster: inventory-grpc}]
 
   - name: public-health
