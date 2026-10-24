@@ -147,6 +147,14 @@ func (c *Config) ApplyDefaults() {
 				cl.LoadBalancer.Policy = "p2c_ewma"
 			}
 		}
+		if d := cl.Discovery; d != nil {
+			if d.Type == "" {
+				d.Type = "dns"
+			}
+			if d.Interval == 0 {
+				d.Interval = 30 * time.Second
+			}
+		}
 		for j := range cl.Endpoints {
 			if cl.Endpoints[j].Weight == 0 {
 				cl.Endpoints[j].Weight = 1

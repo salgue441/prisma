@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Validate performs semantic validation. It reports every problem it finds,
@@ -95,8 +96,27 @@ func (c *Config) Validate() error {
 		if cl.Protocol == "h2c" && cl.TLS != nil {
 			add("%s: h2c cannot be combined with tls", where)
 		}
-		if len(cl.Endpoints) == 0 {
-			add("%s: at least one endpoint is required", where)
+		switch d := cl.Discovery; {
+		case d == nil && len(cl.Endpoints) == 0:
+			add("%s: endpoints or discovery is required", where)
+		case d != nil && len(cl.Endpoints) > 0:
+			add("%s: endpoints and discovery are mutually exclusive", where)
+		case d != nil:
+			if d.Host == "" {
+				add("%s: discovery.host is required", where)
+			}
+			switch d.Type {
+			case "dns":
+				if d.Port <= 0 || d.Port > 65535 {
+					add("%s: discovery type dns requires a port", where)
+				}
+			case "srv":
+			default:
+				add("%s: discovery.type must be dns or srv", where)
+			}
+			if d.Interval < time.Second {
+				add("%s: discovery.interval must be at least 1s", where)
+			}
 		}
 		for _, ep := range cl.Endpoints {
 			if _, _, err := net.SplitHostPort(ep.Address); err != nil {
