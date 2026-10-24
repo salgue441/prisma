@@ -310,6 +310,21 @@ type GraphQL struct {
 	MaxCost            int  `yaml:"maxCost" json:"maxCost"`
 	MaxBatch           int  `yaml:"maxBatch" json:"maxBatch"`
 	BlockIntrospection bool `yaml:"blockIntrospection" json:"blockIntrospection"`
+	// Schema (inline SDL) or SchemaFile enables validation against the
+	// schema and field-level authorization.
+	Schema     string       `yaml:"schema,omitempty" json:"schema,omitempty"`
+	SchemaFile string       `yaml:"schemaFile,omitempty" json:"schemaFile,omitempty"`
+	FieldAuthz []FieldAuthz `yaml:"fieldAuthz,omitempty" json:"fieldAuthz,omitempty"`
+}
+
+// FieldAuthz guards a schema coordinate ("User.email", or "User.*" for every
+// field of a type).
+type FieldAuthz struct {
+	Coordinate string   `yaml:"coordinate" json:"coordinate"`
+	Scopes     []string `yaml:"scopes" json:"scopes"`
+	// OnDeny: reject (default) fails the operation; strip removes the field
+	// from the query and forwards the rest.
+	OnDeny string `yaml:"onDeny,omitempty" json:"onDeny,omitempty"`
 }
 
 type Route struct {
