@@ -496,3 +496,18 @@ func (c *Config) checkRedirectLoops(add func(string, ...any)) {
 		}
 	}
 }
+
+// ValidatePolicy checks a single policy against c, e.g. one generated from
+// a Kubernetes PrismaPolicy, so an invalid policy can be rejected on its own
+// instead of failing the whole configuration.
+func (c *Config) ValidatePolicy(where string, p *Policy) error {
+	var errs []error
+	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	c.validatePolicy(where, p, add)
+	for _, name := range p.Plugins {
+		if !slices.ContainsFunc(c.Plugins, func(pl Plugin) bool { return pl.Name == name }) {
+			add("%s: unknown plugin %q", where, name)
+		}
+	}
+	return errors.Join(errs...)
+}
