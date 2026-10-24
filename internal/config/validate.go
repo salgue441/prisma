@@ -70,7 +70,9 @@ func (c *Config) Validate() error {
 	}
 
 	clusters := map[string]bool{}
+	clusterProto := map[string]string{}
 	for i, cl := range c.Clusters {
+		clusterProto[cl.Name] = cl.Protocol
 		where := fmt.Sprintf("clusters[%d] (%s)", i, cl.Name)
 		if cl.Name == "" {
 			add("clusters[%d]: name is required", i)
@@ -195,6 +197,9 @@ func (c *Config) Validate() error {
 			}
 			if b.Weight < 0 {
 				add("%s: backend weight must be positive", where)
+			}
+			if r.GRPCWeb && clusters[b.Cluster] && clusterProto[b.Cluster] == "http1" {
+				add("%s: grpcWeb requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
 			}
 		}
 		if rw := r.Rewrite; rw != nil {

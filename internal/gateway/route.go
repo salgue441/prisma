@@ -15,6 +15,7 @@ import (
 	"prisma/internal/filters/compression"
 	"prisma/internal/filters/cors"
 	"prisma/internal/filters/graphqlguard"
+	"prisma/internal/filters/grpcweb"
 	"prisma/internal/filters/headers"
 	"prisma/internal/filters/masking"
 	"prisma/internal/filters/ratelimit"
@@ -99,6 +100,13 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Request = append(ch.Request, f)
 		// Masking runs last on the way out (first registered = outermost).
 		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
+	}
+	if rc.GRPCWeb {
+		// Last before the proxy on the way in, first to see the upstream
+		// response on the way out, so other filters see native gRPC.
+		f := grpcweb.New()
+		ch.Request = append(ch.Request, f)
+		ch.Response = append(ch.Response, f)
 	}
 	if pol.Compression != nil {
 		// Outermost on the way out: compress the final (masked) body.

@@ -71,7 +71,20 @@ type Context struct {
 	Rejection string
 	// Error is the internal error behind a gateway-generated response, for logs.
 	Error string
+
+	// values holds filter-private state shared between a filter's request
+	// and response phases. Keys should be unexported types of that filter.
+	values map[any]any
 }
+
+func (c *Context) SetValue(k, v any) {
+	if c.values == nil {
+		c.values = map[any]any{}
+	}
+	c.values[k] = v
+}
+
+func (c *Context) Value(k any) any { return c.values[k] }
 
 type ctxKey struct{}
 
