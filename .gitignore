@@ -1,0 +1,9 @@
+# Architecture docs are kept local (not committed).
+/docs/
+
+# Build output
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
