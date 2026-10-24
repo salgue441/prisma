@@ -1,0 +1,56 @@
+# Connection-level (L4) proxying: raw TCP, TLS passthrough by SNI, and TLS
+# termination in front of a plaintext service.
+#   go run ./cmd/demo-upstream -rest-tls :9443
+#   go run ./cmd/prisma -config examples/15-tcp-tls/prisma.yaml
+# Run from the repository root (certificate paths are relative to it).
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  # Plain TCP: every connection goes to the tcp route on this listener.
+  - name: tcp
+    address: ":7000"
+    type: tcp
+  # TLS passthrough: routed by the SNI in the ClientHello, never decrypted.
+  # The client sees the upstream's own certificate.
+  - name: passthrough
+    address: ":8443"
+    type: tls-passthrough
+  # TLS termination: the gateway decrypts with its certificate and forwards
+  # plaintext TCP.
+  - name: terminate
+    address: ":9444"
+    type: tcp
+    tls:
+      certificates:
+        - {certFile: examples/15-tcp-tls/tls.crt, keyFile: examples/15-tcp-tls/tls.key}
+
+clusters:
+  - name: rest
+    endpoints: [{address: "localhost:9001"}]
+    healthCheck: {type: tcp, interval: 5s}
+  - name: rest-tls
+    endpoints: [{address: "localhost:9443"}]
+    loadBalancer: {policy: least_conn}
+
+routes:
+  - name: raw
+    type: tcp
+    listeners: [tcp]
+    timeout: 5m                       # idle timeout
+    authz: {allowIPs: [127.0.0.0/8, "::1/128"]}
+    backends: [{cluster: rest}]
+
+  - name: api-passthrough
+    type: tcp
+    listeners: [passthrough]
+    match: {hosts: [api.local, "*.api.local"]}
+    backends: [{cluster: rest-tls}]
+
+  - name: db-offload
+    type: tcp
+    listeners: [terminate]
+    match: {hosts: [db.local]}
+    backends: [{cluster: rest}]

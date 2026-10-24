@@ -30,6 +30,7 @@ The gateway listens on `:8080` and its admin API on `127.0.0.1:9901`.
 | [12-wasm-plugin](12-wasm-plugin) | A Proxy-Wasm plugin written with the Go SDK |
 | [13-observability](13-observability) | Tracing with Jaeger, metrics with Prometheus, in Docker Compose |
 | [14-kubernetes](14-kubernetes) | Gateway API controller and PrismaPolicy on a kind cluster |
+| [15-tcp-tls](15-tcp-tls) | TCP proxying, TLS passthrough by SNI, TLS termination |
 
 [tools/](tools) has helpers used by the examples: `token` mints test JWTs and
 `hmac-sign` sends HMAC-signed requests.

@@ -7,7 +7,17 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- `examples/`: fourteen runnable walkthroughs with expected output, from a
+- **TCP and TLS proxying**: listeners with `type: tcp` (optionally
+  terminating TLS) or `type: tls-passthrough` (routed by SNI without
+  decrypting) proxy connections to `type: tcp` routes. Clusters keep their
+  balancing, health checks, outlier ejection, breakers and discovery; routes
+  support weighted backends, IP allow/deny and idle timeouts. Half-close is
+  propagated, PROXY protocol works on these listeners, and clusters with
+  `tls` re-encrypt to the upstream. New metrics: `prisma_tcp_connections_total`,
+  `prisma_tcp_active_connections`, `prisma_tcp_bytes_total`.
+- **Gateway API TLSRoute and TCPRoute** (v1alpha2, experimental channel):
+  TLS listeners in Passthrough or Terminate mode and TCP listeners.
+- `examples/`: runnable walkthroughs with expected output, from a
   minimal config to the Gateway API on kind. `go test ./examples/` checks
   that every example config loads and compiles.
 - The demo upstream takes `-name` and per-backend address flags (to run

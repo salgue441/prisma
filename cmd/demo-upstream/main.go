@@ -5,15 +5,23 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"flag"
 	"io"
 	"log"
+	"math/big"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +35,7 @@ var instance string
 
 func main() {
 	rest := flag.String("rest", ":9001", "REST API address")
+	restTLS := flag.String("rest-tls", "", "REST API over TLS (self-signed certificate), e.g. :9443")
 	gql := flag.String("graphql", ":9002", "GraphQL address")
 	grpcAddr := flag.String("grpc", ":9003", "gRPC address")
 	flag.StringVar(&instance, "name", "demo-1", "instance name reported in responses")
@@ -36,7 +45,7 @@ func main() {
 	for _, s := range []struct {
 		addr  string
 		serve func(string)
-	}{{*rest, serveREST}, {*gql, serveGraphQL}, {*grpcAddr, serveGRPC}} {
+	}{{*rest, serveREST}, {*restTLS, serveRESTTLS}, {*gql, serveGraphQL}, {*grpcAddr, serveGRPC}} {
 		if s.addr != "" {
 			go func() { s.serve(s.addr); done <- struct{}{} }()
 		}
@@ -52,7 +61,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+var restAPI = sync.OnceValue(restMux)
+
 func serveREST(addr string) {
+	log.Printf("%s: REST upstream on %s", instance, addr)
+	log.Fatal(http.ListenAndServe(addr, restAPI()))
+}
+
+// serveRESTTLS serves the REST API over TLS with a fresh self-signed
+// certificate for localhost and *.local, to try TLS passthrough.
+func serveRESTTLS(addr string) {
+	cert, err := selfSigned(instance+".local", "localhost", "*.local")
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv := &http.Server{Addr: addr, Handler: restAPI(), TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}}}
+	log.Printf("%s: REST upstream over TLS on %s", instance, addr)
+	log.Fatal(srv.ListenAndServeTLS("", ""))
+}
+
+func restMux() http.Handler {
 	var unhealthy atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -122,8 +150,7 @@ func serveREST(addr string) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"instance": instance, "status": "ok"})
 	})
-	log.Printf("%s: REST upstream on %s", instance, addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	return mux
 }
 
 // serveGraphQL answers any query with canned data; it exists to show the
@@ -165,4 +192,25 @@ func serveGRPC(addr string) {
 	reflection.Register(s)
 	log.Printf("%s: gRPC upstream on %s", instance, addr)
 	log.Fatal(s.Serve(ln))
+}
+
+func selfSigned(hosts ...string) (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: hosts[0]},
+		DNSNames:     hosts,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
