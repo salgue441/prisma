@@ -138,7 +138,7 @@ func (c *Config) Validate() error {
 		case d != nil && len(cl.Endpoints) > 0:
 			add("%s: endpoints and discovery are mutually exclusive", where)
 		case d != nil:
-			if d.Host == "" && d.Type != "kubernetes" {
+			if d.Host == "" && d.Type != "kubernetes" && d.Type != "consul" {
 				add("%s: discovery.host is required", where)
 			}
 			switch d.Type {
@@ -151,8 +151,16 @@ func (c *Config) Validate() error {
 				if d.Kubernetes == nil || d.Kubernetes.Service == "" {
 					add("%s: discovery type kubernetes requires kubernetes.service", where)
 				}
+			case "consul":
+				if d.Consul == nil || d.Consul.Service == "" {
+					add("%s: discovery type consul requires consul.service", where)
+				} else if a := d.Consul.Address; a != "" {
+					if u, err := url.Parse(a); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+						add("%s: discovery.consul.address must be an http(s) URL", where)
+					}
+				}
 			default:
-				add("%s: discovery.type must be dns, srv or kubernetes", where)
+				add("%s: discovery.type must be dns, srv, kubernetes or consul", where)
 			}
 			if d.Interval < time.Second {
 				add("%s: discovery.interval must be at least 1s", where)

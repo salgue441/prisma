@@ -99,3 +99,31 @@ func TestUnknownFieldsAreRejected(t *testing.T) {
 		t.Fatalf("typo should be rejected, got %v", err)
 	}
 }
+
+func TestConsulTokenRedacted(t *testing.T) {
+	cfg, _, err := Parse([]byte(`
+apiVersion: prisma/v1
+listeners: [{name: public, address: ":8080"}]
+clusters:
+  - name: orders
+    discovery: {type: consul, consul: {service: orders, token: s3cret}}
+routes: [{name: r, match: {pathPrefix: /}, backends: [{cluster: orders}]}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Redacted().Clusters[0].Discovery.Consul.Token; got != "<redacted>" {
+		t.Errorf("token = %q", got)
+	}
+	if cfg.Clusters[0].Discovery.Consul.Token != "s3cret" {
+		t.Error("redaction modified the live config")
+	}
+	if _, _, err := Parse([]byte(`
+apiVersion: prisma/v1
+listeners: [{name: public, address: ":8080"}]
+clusters: [{name: orders, discovery: {type: consul}}]
+routes: [{name: r, match: {pathPrefix: /}, backends: [{cluster: orders}]}]
+`)); err == nil || !strings.Contains(err.Error(), "consul.service") {
+		t.Errorf("missing service: %v", err)
+	}
+}

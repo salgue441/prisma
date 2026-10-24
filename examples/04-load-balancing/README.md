@@ -82,4 +82,21 @@ discovery: {type: dns, host: orders.default.svc.cluster.local, port: 8080, inter
 discovery: {type: srv, host: _http._tcp.orders.service.consul, interval: 10s}
 # Kubernetes EndpointSlices, watched live
 discovery: {type: kubernetes, kubernetes: {service: orders, namespace: shop, portName: http}}
+# Consul: healthy instances, updated as soon as Consul's health checks change
+discovery: {type: consul, consul: {address: "http://consul:8500", service: orders, tag: v2, token: "${env:CONSUL_TOKEN}"}}
 ```
+
+To try Consul locally:
+
+```sh
+docker run -d --name consul -p 8500:8500 hashicorp/consul:1.20 agent -dev -client=0.0.0.0
+curl -X PUT localhost:8500/v1/agent/service/register -d '{"ID":"blue","Name":"orders","Address":"127.0.0.1","Port":9001,
+  "Check":{"HTTP":"http://host.docker.internal:9001/health","Interval":"2s"}}'
+curl -X PUT localhost:8500/v1/agent/service/register -d '{"ID":"green","Name":"orders","Address":"127.0.0.1","Port":9011,
+  "Check":{"HTTP":"http://host.docker.internal:9011/health","Interval":"2s"}}'
+```
+
+Then use `discovery: {type: consul, consul: {address: "http://localhost:8500", service: orders}}`
+in a cluster. Make green fail its health check (`curl -XPOST
+'localhost:9011/admin/health?ok=false'`) and Consul, then the gateway, drop it
+within a few seconds.

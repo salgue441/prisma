@@ -171,6 +171,27 @@ type Discovery struct {
 	Interval time.Duration `yaml:"interval" json:"interval"`
 	// Kubernetes watches the EndpointSlices of a Service (type kubernetes).
 	Kubernetes *KubernetesDiscovery `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	// Consul watches a service's healthy instances (type consul).
+	Consul *ConsulDiscovery `yaml:"consul,omitempty" json:"consul,omitempty"`
+}
+
+// ConsulDiscovery follows a Consul service's instances with blocking
+// queries on /v1/health/service, so changes apply within moments.
+type ConsulDiscovery struct {
+	// Address of the Consul HTTP API (default http://127.0.0.1:8500).
+	Address string `yaml:"address,omitempty" json:"address,omitempty"`
+	Service string `yaml:"service" json:"service"`
+	// Tag keeps only instances with this tag.
+	Tag        string `yaml:"tag,omitempty" json:"tag,omitempty"`
+	Datacenter string `yaml:"datacenter,omitempty" json:"datacenter,omitempty"`
+	// Namespace and Partition are Consul Enterprise features.
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	Partition string `yaml:"partition,omitempty" json:"partition,omitempty"`
+	Token     string `yaml:"token,omitempty" json:"token,omitempty"`
+	// AllowWarning also routes to instances whose checks are in warning.
+	AllowWarning bool `yaml:"allowWarning" json:"allowWarning"`
+	// CAFile verifies an https Consul address.
+	CAFile string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
 }
 
 // KubernetesDiscovery defaults to in-cluster access with the pod's service
