@@ -283,6 +283,9 @@ type Masking struct {
 	OnFailure      string     `yaml:"onFailure,omitempty" json:"onFailure,omitempty"` // closed (default) | open
 	MaxBufferBytes ByteSize   `yaml:"maxBufferBytes" json:"maxBufferBytes"`
 	HashKey        string     `yaml:"hashKey,omitempty" json:"hashKey,omitempty"`
+	// DescriptorSet is a FileDescriptorSet (protoc --include_imports
+	// --descriptor_set_out=...) used to mask gRPC response messages.
+	DescriptorSet string `yaml:"descriptorSet,omitempty" json:"descriptorSet,omitempty"`
 }
 
 type MaskRule struct {

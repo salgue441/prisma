@@ -111,11 +111,12 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
 	}
 	if rc.GRPCWeb {
-		// Last before the proxy on the way in, first to see the upstream
-		// response on the way out, so other filters see native gRPC.
+		// Translate last on the way in and last on the way out (response
+		// filters run in reverse), so every other filter — masking
+		// included — sees native gRPC.
 		f := grpcweb.New()
 		ch.Request = append(ch.Request, f)
-		ch.Response = append(ch.Response, f)
+		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
 	}
 	if pol.Compression != nil {
 		// Outermost on the way out: compress the final (masked) body.
