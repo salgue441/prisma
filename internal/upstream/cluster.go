@@ -20,6 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"prisma/internal/config"
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
@@ -273,10 +278,22 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 			done = d
 		}
 
-		out := req.WithContext(ctx)
+		// The tracer comes from the server span, so tracing costs nothing
+		// when it is disabled (noop provider).
+		actx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("prisma").Start(ctx, "upstream "+c.Name,
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("server.address", ep.Address),
+				attribute.String("prisma.cluster", c.Name),
+				attribute.Int("prisma.attempt", attempt+1),
+			))
+		out := req.WithContext(actx)
 		u := *req.URL
 		u.Scheme, u.Host = c.Scheme, ep.Address
 		out.URL = &u
+		if span.SpanContext().IsValid() {
+			telemetry.Propagator.Inject(actx, propagation.HeaderCarrier(out.Header))
+		}
 
 		ep.inflight.Add(1)
 		start := time.Now()
@@ -284,6 +301,7 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		latency := time.Since(start)
 
 		failure, retryable := classify(resp, err, policy)
+		recordAttempt(span, resp, err, failure)
 		if err == nil {
 			ep.observeLatency(latency)
 		}
@@ -305,16 +323,37 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !canRetry {
 			if err != nil {
 				ep.inflight.Add(-1)
+				span.End()
 				return nil, err
 			}
-			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() { ep.inflight.Add(-1) }}
+			// The span covers the whole response stream, not just headers.
+			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() {
+				ep.inflight.Add(-1)
+				span.End()
+			}}
 			return resp, nil
 		}
 		ep.inflight.Add(-1)
+		span.End()
 		if resp != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 		}
+	}
+}
+
+func recordAttempt(span trace.Span, resp *http.Response, err error, failure bool) {
+	if !span.IsRecording() {
+		return
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if failure {
+		span.SetStatus(codes.Error, resp.Status)
 	}
 }
 

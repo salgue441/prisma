@@ -13,6 +13,7 @@ type Config struct {
 	Global     Global            `yaml:"global" json:"global"`
 	Admin      Admin             `yaml:"admin" json:"admin"`
 	Redis      *Redis            `yaml:"redis,omitempty" json:"redis,omitempty"`
+	Tracing    *Tracing          `yaml:"tracing,omitempty" json:"tracing,omitempty"`
 	Listeners  []Listener        `yaml:"listeners" json:"listeners"`
 	Clusters   []Cluster         `yaml:"clusters" json:"clusters"`
 	Policies   map[string]Policy `yaml:"policies,omitempty" json:"policies,omitempty"`
@@ -47,6 +48,15 @@ type Redis struct {
 	DB       int           `yaml:"db" json:"db"`
 	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
 	Prefix   string        `yaml:"prefix" json:"prefix"`
+}
+
+// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
+type Tracing struct {
+	Endpoint    string            `yaml:"endpoint" json:"endpoint"` // host:port of an OTLP/gRPC collector
+	Insecure    bool              `yaml:"insecure" json:"insecure"`
+	SampleRatio float64           `yaml:"sampleRatio" json:"sampleRatio"`
+	ServiceName string            `yaml:"serviceName" json:"serviceName"`
+	Headers     map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 type Listener struct {

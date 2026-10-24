@@ -30,6 +30,15 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if t := c.Tracing; t != nil {
+		if _, _, err := net.SplitHostPort(t.Endpoint); err != nil {
+			add("tracing.endpoint must be host:port, got %q", t.Endpoint)
+		}
+		if t.SampleRatio < 0 || t.SampleRatio > 1 {
+			add("tracing.sampleRatio must be between 0 and 1")
+		}
+	}
+
 	listeners := map[string]bool{}
 	if len(c.Listeners) == 0 {
 		add("listeners: at least one listener is required")

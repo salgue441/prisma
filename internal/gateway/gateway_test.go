@@ -19,6 +19,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/golang-jwt/jwt/v5"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -576,6 +579,76 @@ routes:
 	}
 	if g.Snapshot().Clusters["up"] != before {
 		t.Error("unchanged cluster was rebuilt; health and pool state would be lost")
+	}
+}
+
+func TestTracingPropagatesContextAndRecordsSpans(t *testing.T) {
+	var upstreamTraceparent atomic.Value
+	attempt := atomic.Int32{}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamTraceparent.Store(r.Header.Get("Traceparent"))
+		if attempt.Add(1) == 1 {
+			w.WriteHeader(503) // force one retry → two client spans
+		}
+	}))
+	defer up.Close()
+
+	yml := strings.ReplaceAll(basePrefix+`
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: traced
+    match: {pathPrefix: /}
+    retries: {attempts: 1, on: ["503"], backoff: 1ms}
+    backends: [{cluster: up}]
+`, "{{up}}", addr(up))
+	cfg, v, err := config.Parse([]byte(yml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	gw := gateway.New(telemetry.NewMetrics(), nil)
+	gw.SetTracerProvider(tp)
+	if err := gw.Apply(cfg, v); err != nil {
+		t.Fatal(err)
+	}
+	defer gw.Close()
+	srv := httptest.NewServer(gw.Handler("public"))
+	defer srv.Close()
+
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	resp, _ := get(t, srv.URL+"/x", map[string]string{"Traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+
+	spans := rec.Ended()
+	var server sdktrace.ReadOnlySpan
+	var clients []sdktrace.ReadOnlySpan
+	for _, s := range spans {
+		switch s.SpanKind() {
+		case trace.SpanKindServer:
+			server = s
+		case trace.SpanKindClient:
+			clients = append(clients, s)
+		}
+	}
+	if server == nil || server.Name() != "GET traced" || server.SpanContext().TraceID().String() != parentTrace {
+		t.Fatalf("server span missing or not joined to the inbound trace: %v", spans)
+	}
+	if len(clients) != 2 {
+		t.Fatalf("want one client span per attempt (2), got %d", len(clients))
+	}
+	for _, c := range clients {
+		if c.Parent().SpanID() != server.SpanContext().SpanID() {
+			t.Error("client span is not a child of the server span")
+		}
+	}
+	gotTP := upstreamTraceparent.Load().(string)
+	if !strings.Contains(gotTP, parentTrace) || strings.Contains(gotTP, "00f067aa0ba902b7") {
+		t.Errorf("upstream traceparent %q must carry the trace id with the gateway's client span id", gotTP)
 	}
 }
 
