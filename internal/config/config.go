@@ -18,6 +18,7 @@ type Config struct {
 	Clusters   []Cluster         `yaml:"clusters" json:"clusters"`
 	Policies   map[string]Policy `yaml:"policies,omitempty" json:"policies,omitempty"`
 	Consumers  []Consumer        `yaml:"consumers,omitempty" json:"consumers,omitempty"`
+	Plugins    []Plugin          `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 	Routes     []Route           `yaml:"routes" json:"routes"`
 }
 
@@ -50,6 +51,25 @@ type Redis struct {
 	DB       int           `yaml:"db" json:"db"`
 	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
 	Prefix   string        `yaml:"prefix" json:"prefix"`
+}
+
+// Plugin is a Proxy-Wasm module (ABI 0.2.x), e.g. built with the official Go,
+// Rust or C++ SDKs. Routes and policies enable it by name.
+type Plugin struct {
+	Name string `yaml:"name" json:"name"`
+	File string `yaml:"file" json:"file"`
+	// Config is passed to the plugin as its plugin configuration: a string
+	// as-is, any other YAML value encoded as JSON.
+	Config   any `yaml:"config,omitempty" json:"config,omitempty"`
+	VMConfig any `yaml:"vmConfig,omitempty" json:"vmConfig,omitempty"`
+	// Instances is the number of VMs (default: GOMAXPROCS, at most 8).
+	Instances int `yaml:"instances" json:"instances"`
+	// Bodies buffers request and response bodies (up to MaxBodyBytes) and
+	// runs the body callbacks; otherwise bodies stream past the plugin.
+	Bodies       bool     `yaml:"bodies" json:"bodies"`
+	MaxBodyBytes ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	// FailOpen continues requests when the plugin traps or fails.
+	FailOpen bool `yaml:"failOpen" json:"failOpen"`
 }
 
 // Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
@@ -192,6 +212,8 @@ type Policy struct {
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
 	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+	// Plugins run in order; they accumulate across global, policy and route.
+	Plugins []string `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 }
 
 // Cache stores GET responses in the gateway's shared in-memory cache,

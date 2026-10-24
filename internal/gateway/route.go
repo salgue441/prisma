@@ -22,6 +22,7 @@ import (
 	"prisma/internal/filters/masking"
 	"prisma/internal/filters/ratelimit"
 	"prisma/internal/filters/redirect"
+	"prisma/internal/filters/wasmplugin"
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
 	"prisma/internal/upstream"
@@ -80,6 +81,19 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if pol.ExtAuthz != nil {
 		// After local checks, so cheap rejections never cost a round-trip.
 		ch.Request = append(ch.Request, extauthz.New(rc.Name, pol.ExtAuthz, m))
+	}
+	// Plugins run after built-in authentication and authorization, so they
+	// can read the principal through properties.
+	for _, name := range pol.Plugins {
+		var pc *config.Plugin
+		for i := range cfg.Plugins {
+			if cfg.Plugins[i].Name == name {
+				pc = &cfg.Plugins[i]
+			}
+		}
+		f := wasmplugin.New(pc, d.snap.Plugins[name].plugin)
+		ch.Request = append(ch.Request, f)
+		ch.Response = append(ch.Response, f)
 	}
 	if pol.GraphQL != nil {
 		maxBody := int64(rc.MaxBodyBytes)

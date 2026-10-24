@@ -22,6 +22,7 @@ type Metrics struct {
 	ExtAuthz         *prometheus.CounterVec
 	Mirror           *prometheus.CounterVec
 	Cache            *prometheus.CounterVec
+	WasmMetric       *prometheus.GaugeVec
 	EndpointHealthy  *prometheus.GaugeVec
 	CircuitOpen      *prometheus.GaugeVec
 	ConfigReloads    *prometheus.CounterVec
@@ -67,6 +68,9 @@ func NewMetrics() *Metrics {
 		Cache: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "prisma_cache_requests_total", Help: "Response cache lookups and stores (hit, miss, bypass, stored).",
 		}, []string{"route", "result"}),
+		WasmMetric: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "prisma_wasm_metric", Help: "Metrics defined by Proxy-Wasm plugins (proxy_define_metric).",
+		}, []string{"plugin", "name"}),
 		EndpointHealthy: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "prisma_endpoint_healthy", Help: "1 if the endpoint passes active health checks.",
 		}, []string{"cluster", "endpoint"}),
@@ -81,7 +85,12 @@ func NewMetrics() *Metrics {
 		}, []string{"version"}),
 	}
 	reg.MustRegister(m.Requests, m.Duration, m.UpstreamRequests, m.UpstreamDuration, m.Retries,
-		m.RateLimit, m.AuthFailures, m.MaskingFailures, m.ExtAuthz, m.Mirror, m.Cache, m.EndpointHealthy, m.CircuitOpen,
+		m.RateLimit, m.AuthFailures, m.MaskingFailures, m.ExtAuthz, m.Mirror, m.Cache, m.WasmMetric, m.EndpointHealthy, m.CircuitOpen,
 		m.ConfigReloads, m.ConfigInfo)
 	return m
+}
+
+// SetWasmMetric implements wasm.MetricSink.
+func (m *Metrics) SetWasmMetric(plugin, name string, value float64) {
+	m.WasmMetric.WithLabelValues(plugin, name).Set(value)
 }
