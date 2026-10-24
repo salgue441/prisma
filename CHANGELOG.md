@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-24
+
+### Added
+- **Proxy-Wasm plugins** (ABI 0.2.x) on wazero. Plugins built with the
+  official SDKs run unmodified. Supported: headers with pseudo-headers,
+  buffered bodies, local responses, HTTP callouts through gateway clusters,
+  properties, shared data with CAS, Prometheus metrics, timers and logging.
+  Each plugin runs a pool of VM instances, and callbacks have a time limit;
+  a crashed or looping instance is replaced and fails only its own request.
+- **Gateway API controller**: Gateways, HTTPRoutes, GRPCRoutes and
+  ReferenceGrants are translated into listeners, routes and Kubernetes-backed
+  clusters, applied without restarts, and get status conditions written back.
+- **PrismaPolicy CRD** (`prisma.dev/v1alpha1`) attaches Prisma features to
+  Gateways or Routes; route policies override gateway policies, and each
+  policy is validated on its own.
+- **Kubernetes EndpointSlice discovery**: endpoints follow pod readiness and
+  termination through list+watch, without client-go.
+- Exact `queryParams` route matching, inline PEM listener certificates, and
+  `directResponse` routes.
+- Kubernetes manifests: `deploy/kubernetes/prisma.yaml` (ConfigMap mode) and
+  `deploy/kubernetes/gateway-api.yaml` (controller mode, CRD, RBAC).
+
+### Fixed
+- Rewriting a prefix to `/` produced a double slash (`/foo/bar` became
+  `//bar`).
+
 ## [0.3.0] - 2026-10-23
 
 ### Added
