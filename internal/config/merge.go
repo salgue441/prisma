@@ -21,8 +21,14 @@ func (c *Config) EffectivePolicy(r *Route) Policy {
 		if p.GraphQL != nil {
 			out.GraphQL = p.GraphQL
 		}
+		if p.ExtAuthz != nil {
+			out.ExtAuthz = p.ExtAuthz
+		}
 		if p.CORS != nil {
 			out.CORS = p.CORS
+		}
+		if p.Cache != nil {
+			out.Cache = p.Cache
 		}
 		if p.Compression != nil {
 			out.Compression = p.Compression

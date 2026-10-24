@@ -103,3 +103,5 @@ func (f *Rewrite) OnRequest(c *pipeline.Context) pipeline.Responder {
 	}
 	return nil
 }
+
+func (response) ServedByGateway() {}

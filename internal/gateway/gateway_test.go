@@ -791,6 +791,43 @@ routes: [{name: r, match: {pathPrefix: /}, grpcWeb: true, backends: [{cluster: c
 	}
 }
 
+func TestProxyProtocolListener(t *testing.T) {
+	up := echo(t)
+	gwAddr := startH2CGateway(t, `
+apiVersion: prisma/v1
+listeners:
+  - name: public
+    address: "127.0.0.1:0"
+    protocols: [http1]
+    proxyProtocol: {trustedCIDRs: [127.0.0.0/8]}
+clusters:
+  - name: up
+    endpoints: [{address: "`+addr(up)+`"}]
+routes:
+  - name: r
+    match: {pathPrefix: /}
+    backends: [{cluster: up}]
+`)
+	send := func(raw string) string {
+		c, err := net.Dial("tcp", gwAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+		_, _ = io.WriteString(c, raw)
+		b, _ := io.ReadAll(c)
+		return string(b)
+	}
+	resp := send("PROXY TCP4 203.0.113.50 10.0.0.1 40000 80\r\nGET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n")
+	if !strings.Contains(resp, `"xff":"203.0.113.50"`) {
+		t.Errorf("upstream did not see the PROXY client address:\n%s", resp)
+	}
+	if resp := send("GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n"); strings.Contains(resp, "200 OK") {
+		t.Error("trusted peer without a PROXY header must be rejected")
+	}
+}
+
 func TestGRPCProxyUnaryStreamingAndErrors(t *testing.T) {
 	upAddr := startGRPCUpstream(t)
 	gwAddr := startH2CGateway(t, `

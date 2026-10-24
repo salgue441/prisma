@@ -36,10 +36,11 @@ type Filter struct {
 // Consumers indexes API key digests to consumers.
 type Consumers struct {
 	byKeyDigest map[string]*config.Consumer
+	all         []config.Consumer
 }
 
 func NewConsumers(cs []config.Consumer) *Consumers {
-	out := &Consumers{byKeyDigest: map[string]*config.Consumer{}}
+	out := &Consumers{byKeyDigest: map[string]*config.Consumer{}, all: cs}
 	for i := range cs {
 		c := &cs[i]
 		for _, k := range c.APIKeys {
@@ -80,6 +81,9 @@ func New(route string, cfg *config.AuthN, consumers *Consumers, reg *Registry, m
 	// and only opaque ones cost an introspection round-trip.
 	if cfg.Introspection != nil {
 		f.providers = append(f.providers, newIntrospectionProvider(cfg.Introspection, reg))
+	}
+	if cfg.HMAC != nil {
+		f.providers = append(f.providers, newHMACProvider(cfg.HMAC, consumers.all, reg))
 	}
 	return f, nil
 }

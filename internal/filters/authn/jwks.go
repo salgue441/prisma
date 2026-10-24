@@ -31,6 +31,7 @@ type Registry struct {
 	mu            sync.Mutex
 	caches        map[string]*jwks
 	introspection map[string]*introspectionCache
+	replay        *replayCache
 	client        *http.Client
 }
 
@@ -38,6 +39,7 @@ func NewRegistry() *Registry {
 	return &Registry{
 		caches:        map[string]*jwks{},
 		introspection: map[string]*introspectionCache{},
+		replay:        newReplayCache(),
 		client:        &http.Client{Timeout: 5 * time.Second},
 	}
 }

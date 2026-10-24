@@ -180,6 +180,12 @@ func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot, spa
 	if c.Rejection != "" {
 		attrs = append(attrs, slog.String("rejected_by", c.Rejection))
 	}
+	if c.ServedBy != "" {
+		attrs = append(attrs, slog.String("served_by", c.ServedBy))
+	}
+	if c.CacheStatus != "" {
+		attrs = append(attrs, slog.String("cache", c.CacheStatus))
+	}
 	if c.Error != "" {
 		attrs = append(attrs, slog.String("error", c.Error))
 	}

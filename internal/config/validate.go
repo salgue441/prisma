@@ -42,6 +42,7 @@ func (c *Config) Validate() error {
 	}
 
 	listeners := map[string]bool{}
+	addresses := map[string]string{}
 	if len(c.Listeners) == 0 {
 		add("listeners: at least one listener is required")
 	}
@@ -56,12 +57,23 @@ func (c *Config) Validate() error {
 		if _, _, err := net.SplitHostPort(l.Address); err != nil {
 			add("%s: invalid address %q", where, l.Address)
 		}
+		if other, dup := addresses[l.Address]; dup {
+			add("%s: address %s is already used by listener %s", where, l.Address, other)
+		}
+		addresses[l.Address] = l.Name
 		for _, p := range l.Protocols {
 			if !slices.Contains([]string{"http1", "http2", "h2c"}, p) {
 				add("%s: unknown protocol %q", where, p)
 			}
 			if p == "http2" && l.TLS == nil {
 				add("%s: http2 requires tls (use h2c for cleartext HTTP/2)", where)
+			}
+		}
+		if pp := l.ProxyProtocol; pp != nil {
+			for _, cidr := range pp.TrustedCIDRs {
+				if _, err := netip.ParsePrefix(cidr); err != nil {
+					add("%s: proxyProtocol: invalid CIDR %q", where, cidr)
+				}
 			}
 		}
 		if t := l.TLS; t != nil {
@@ -146,6 +158,7 @@ func (c *Config) Validate() error {
 	}
 
 	consumers := map[string]bool{}
+	hmacKeyOwner := map[string]string{}
 	for i, cs := range c.Consumers {
 		if cs.Name == "" {
 			add("consumers[%d]: name is required", i)
@@ -153,6 +166,15 @@ func (c *Config) Validate() error {
 			add("consumers[%d]: duplicate consumer %q", i, cs.Name)
 		}
 		consumers[cs.Name] = true
+		for id, secret := range cs.HMACKeys {
+			if hmacKeyOwner[id] != "" {
+				add("consumers[%d]: hmac key id %q is also used by %q", i, id, hmacKeyOwner[id])
+			}
+			hmacKeyOwner[id] = cs.Name
+			if len(secret) < 32 {
+				add("consumers[%d]: hmac key %q must be at least 32 bytes", i, id)
+			}
+		}
 	}
 
 	routes := map[string]bool{}
@@ -232,6 +254,14 @@ func (c *Config) Validate() error {
 				add("%s: grpcWeb requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
 			}
 		}
+		if mi := r.Mirror; mi != nil {
+			if !clusters[mi.Cluster] {
+				add("%s: mirror: unknown cluster %q", where, mi.Cluster)
+			}
+			if mi.Percent <= 0 || mi.Percent > 100 {
+				add("%s: mirror.percent must be in (0, 100]", where)
+			}
+		}
 		if rw := r.Rewrite; rw != nil {
 			if rw.PathRegex != "" {
 				if _, err := regexp.Compile(rw.PathRegex); err != nil {
@@ -264,8 +294,8 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		if !slices.Contains([]string{"", "any", "all"}, a.Mode) {
 			add("%s: authn.mode must be any or all", where)
 		}
-		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil {
-			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls)", where)
+		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil && a.HMAC == nil {
+			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls, hmac)", where)
 		}
 		if in := a.Introspection; in != nil {
 			if u, err := url.Parse(in.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -320,6 +350,31 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		}
 		if !slices.Contains([]string{"", "graphql"}, rl.Cost) {
 			add("%s: cost must be empty or graphql", w)
+		}
+	}
+	if g := p.GraphQL; g != nil {
+		if g.Schema != "" && g.SchemaFile != "" {
+			add("%s: graphql: schema and schemaFile are mutually exclusive", where)
+		}
+		if len(g.FieldAuthz) > 0 && g.Schema == "" && g.SchemaFile == "" {
+			add("%s: graphql.fieldAuthz requires schema or schemaFile", where)
+		}
+		for i, fa := range g.FieldAuthz {
+			typ, field, ok := strings.Cut(fa.Coordinate, ".")
+			if !ok || typ == "" || field == "" {
+				add("%s: graphql.fieldAuthz[%d]: coordinate must look like Type.field or Type.*", where, i)
+			}
+			if !slices.Contains([]string{"", "reject", "strip"}, fa.OnDeny) {
+				add("%s: graphql.fieldAuthz[%d]: onDeny must be reject or strip", where, i)
+			}
+			if len(fa.Scopes) == 0 {
+				add("%s: graphql.fieldAuthz[%d]: scopes are required", where, i)
+			}
+		}
+	}
+	if ea := p.ExtAuthz; ea != nil {
+		if u, err := url.Parse(ea.URL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			add("%s: extAuthz.url must be an http(s) URL", where)
 		}
 	}
 	if cors := p.CORS; cors != nil {

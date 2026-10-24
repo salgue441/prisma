@@ -80,16 +80,9 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		return err
 	}
 
-	servers := make([]*gateway.Server, 0, len(cfg.Listeners))
-	for _, l := range cfg.Listeners {
-		s, err := gw.NewServer(l)
-		if err != nil {
-			return err
-		}
-		if err := s.Listen(); err != nil {
-			return err
-		}
-		servers = append(servers, s)
+	listeners := gw.NewListenerSet(cfg.Global.DrainTimeout)
+	if err := listeners.Apply(cfg.Listeners); err != nil {
+		return err
 	}
 
 	var mu sync.Mutex
@@ -106,9 +99,6 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		if v == current {
 			return nil
 		}
-		if !reflect.DeepEqual(next.Listeners, gw.Snapshot().Config.Listeners) {
-			slog.Warn("listener changes require a restart; only routes, clusters and policies were reloaded")
-		}
 		if !reflect.DeepEqual(next.Tracing, gw.Snapshot().Config.Tracing) {
 			slog.Warn("tracing changes require a restart")
 		}
@@ -117,10 +107,12 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 			slog.Error("config reload failed; keeping current config", "version", current, "err", err)
 			return err
 		}
-		for _, s := range servers {
-			if err := s.ReloadCertificates(); err != nil {
-				slog.Error("certificate reload failed", "listener", s.Name, "err", err)
-			}
+		// Routes first, then listeners: a new listener only starts once the
+		// routes that reference it exist. Unchanged listeners reload certs.
+		if err := listeners.Apply(next.Listeners); err != nil {
+			metrics.ConfigReloads.WithLabelValues("failed").Inc()
+			slog.Error("listener changes not applied; previous listeners keep serving", "err", err)
+			return err
 		}
 		metrics.ConfigReloads.WithLabelValues("success").Inc()
 		current = v
@@ -133,10 +125,7 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	errCh := make(chan error, len(servers)+1)
-	for _, s := range servers {
-		go func() { errCh <- s.Serve() }()
-	}
+	errCh := make(chan error, 1)
 	go func() {
 		slog.Info("admin listening", "address", cfg.Admin.Address)
 		if err := adminSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -155,9 +144,9 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 	for {
 		select {
 		case err := <-errCh:
-			if err != nil {
-				return err
-			}
+			return err
+		case err := <-listeners.Errors():
+			return err
 		case sig := <-sigs:
 			if sig == syscall.SIGHUP {
 				slog.Info("SIGHUP received, reloading configuration")
@@ -165,14 +154,14 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 				continue
 			}
 			slog.Info("shutting down", "signal", sig.String())
-			return shutdown(gw, servers, adminSrv)
+			return shutdown(gw, listeners, adminSrv)
 		}
 	}
 }
 
 // shutdown fails readiness first so load balancers stop sending traffic, then
 // drains listeners.
-func shutdown(gw *gateway.Gateway, servers []*gateway.Server, adminSrv *http.Server) error {
+func shutdown(gw *gateway.Gateway, listeners *gateway.ListenerSet, adminSrv *http.Server) error {
 	gw.SetReady(false)
 	g := gw.Snapshot().Config.Global
 	if g.ShutdownDelay > 0 {
@@ -180,15 +169,7 @@ func shutdown(gw *gateway.Gateway, servers []*gateway.Server, adminSrv *http.Ser
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), g.DrainTimeout)
 	defer cancel()
-	var wg sync.WaitGroup
-	for _, s := range servers {
-		wg.Go(func() {
-			if err := s.Shutdown(ctx); err != nil {
-				slog.Warn("listener did not drain in time", "listener", s.Name, "err", err)
-			}
-		})
-	}
-	wg.Wait()
+	listeners.Shutdown(ctx)
 	return adminSrv.Shutdown(ctx)
 }
 

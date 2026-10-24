@@ -12,8 +12,10 @@ import (
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
 	"prisma/internal/filters/authz"
+	"prisma/internal/filters/cache"
 	"prisma/internal/filters/compression"
 	"prisma/internal/filters/cors"
+	"prisma/internal/filters/extauthz"
 	"prisma/internal/filters/graphqlguard"
 	"prisma/internal/filters/grpcweb"
 	"prisma/internal/filters/headers"
@@ -44,6 +46,7 @@ type routeHandler struct {
 	backends    []backend
 	totalWeight int
 	retry       *upstream.RetryPolicy
+	mirror      *mirror
 }
 
 // buildRoute assembles the filter chain in phase order:
@@ -74,15 +77,30 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if pol.AuthZ != nil {
 		ch.Request = append(ch.Request, authz.New(rc.Name, pol.AuthZ, m))
 	}
+	if pol.ExtAuthz != nil {
+		// After local checks, so cheap rejections never cost a round-trip.
+		ch.Request = append(ch.Request, extauthz.New(rc.Name, pol.ExtAuthz, m))
+	}
 	if pol.GraphQL != nil {
 		maxBody := int64(rc.MaxBodyBytes)
 		if maxBody == 0 {
 			maxBody = int64(cfg.Global.MaxBodyBytes)
 		}
-		ch.Request = append(ch.Request, graphqlguard.New(pol.GraphQL, maxBody))
+		f, err := graphqlguard.New(pol.GraphQL, maxBody)
+		if err != nil {
+			return nil, err
+		}
+		ch.Request = append(ch.Request, f)
 	}
 	if len(pol.RateLimit) > 0 {
 		ch.Request = append(ch.Request, ratelimit.New(rc.Name, pol.RateLimit, d.gw.local, d.redis, m))
+	}
+	var cacheFilter *cache.Filter
+	if pol.Cache != nil {
+		// After authn, authz and rate limiting: hits are still authorized and
+		// counted. Before rewrite: keys use the client-facing URL.
+		cacheFilter = cache.New(rc.Name, pol.Cache, d.gw.cache, m)
+		ch.Request = append(ch.Request, cacheFilter)
 	}
 	if rc.Rewrite != nil {
 		ch.Request = append(ch.Request, redirect.NewRewrite(rc.Rewrite))
@@ -102,21 +120,30 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
 	}
 	if rc.GRPCWeb {
-		// Last before the proxy on the way in, first to see the upstream
-		// response on the way out, so other filters see native gRPC.
+		// Translate last on the way in and last on the way out (response
+		// filters run in reverse), so every other filter — masking
+		// included — sees native gRPC.
 		f := grpcweb.New()
 		ch.Request = append(ch.Request, f)
-		ch.Response = append(ch.Response, f)
+		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
 	}
 	if pol.Compression != nil {
 		// Outermost on the way out: compress the final (masked) body.
 		ch.Response = append([]pipeline.ResponseFilter{compression.New(pol.Compression)}, ch.Response...)
+	}
+	if cacheFilter != nil {
+		// Outermost: store exactly what the client receives (masked and
+		// compressed; Vary: Accept-Encoding keeps encodings apart).
+		ch.Response = append([]pipeline.ResponseFilter{cacheFilter}, ch.Response...)
 	}
 
 	for _, b := range rc.Backends {
 		cl := d.snap.Clusters[b.Cluster]
 		h.backends = append(h.backends, backend{cluster: cl, proxy: d.gw.newProxy(cl, &h.chain, d.snap), weight: b.Weight})
 		h.totalWeight += b.Weight
+	}
+	if mc := rc.Mirror; mc != nil {
+		h.mirror = newMirror(rc.Name, mc, d.snap.Clusters[mc.Cluster], m)
 	}
 	return h, nil
 }
@@ -130,6 +157,9 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(h.backends) == 0 {
 		respond(w, c, gwerr.Internal().WithReason("route has no backends"))
 		return
+	}
+	if h.mirror != nil {
+		h.mirror.maybeSend(c)
 	}
 	b := h.pick()
 	ctx := upstream.WithRetryPolicy(c.Request.Context(), h.retry)

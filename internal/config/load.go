@@ -85,6 +85,9 @@ func (c *Config) ApplyDefaults() {
 	if g.DrainTimeout == 0 {
 		g.DrainTimeout = 30 * time.Second
 	}
+	if g.CacheMaxBytes == 0 {
+		g.CacheMaxBytes = 64 << 20
+	}
 	if c.Admin.Address == "" {
 		c.Admin.Address = "127.0.0.1:9901"
 	}
@@ -216,6 +219,20 @@ func (c *Config) ApplyDefaults() {
 				r.Backends[j].Weight = 1
 			}
 		}
+		if m := r.Mirror; m != nil {
+			if m.Percent == 0 {
+				m.Percent = 100
+			}
+			if m.MaxBodyBytes == 0 {
+				m.MaxBodyBytes = 1 << 20
+			}
+			if m.Timeout == 0 {
+				m.Timeout = 10 * time.Second
+			}
+			if m.MaxConcurrent == 0 {
+				m.MaxConcurrent = 100
+			}
+		}
 		if rt := r.Retries; rt != nil {
 			if len(rt.On) == 0 {
 				rt.On = []string{"connect-failure", "503"}
@@ -245,6 +262,9 @@ func (c *Config) Redacted() *Config {
 	for i := range cp.Consumers {
 		for j := range cp.Consumers[i].APIKeys {
 			cp.Consumers[i].APIKeys[j] = r
+		}
+		for k := range cp.Consumers[i].HMACKeys {
+			cp.Consumers[i].HMACKeys[k] = r
 		}
 	}
 	redactPolicy := func(p *Policy) {

@@ -27,7 +27,9 @@ type Global struct {
 	TrustedProxies []string      `yaml:"trustedProxies,omitempty" json:"trustedProxies,omitempty"`
 	ShutdownDelay  time.Duration `yaml:"shutdownDelay" json:"shutdownDelay"`
 	DrainTimeout   time.Duration `yaml:"drainTimeout" json:"drainTimeout"`
-	AccessLog      AccessLog     `yaml:"accessLog" json:"accessLog"`
+	// CacheMaxBytes bounds the shared response cache (default 64MiB).
+	CacheMaxBytes ByteSize  `yaml:"cacheMaxBytes" json:"cacheMaxBytes"`
+	AccessLog     AccessLog `yaml:"accessLog" json:"accessLog"`
 	// Use lists policies applied to every route before the route's own policies.
 	Use []string `yaml:"use,omitempty" json:"use,omitempty"`
 }
@@ -60,14 +62,25 @@ type Tracing struct {
 }
 
 type Listener struct {
-	Name                 string        `yaml:"name" json:"name"`
-	Address              string        `yaml:"address" json:"address"`
-	Protocols            []string      `yaml:"protocols" json:"protocols"` // http1, http2, h2c
-	TLS                  *ListenerTLS  `yaml:"tls,omitempty" json:"tls,omitempty"`
-	ReadHeaderTimeout    time.Duration `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
-	IdleTimeout          time.Duration `yaml:"idleTimeout" json:"idleTimeout"`
-	MaxHeaderBytes       ByteSize      `yaml:"maxHeaderBytes" json:"maxHeaderBytes"`
-	MaxConcurrentStreams int           `yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
+	Name                 string         `yaml:"name" json:"name"`
+	Address              string         `yaml:"address" json:"address"`
+	Protocols            []string       `yaml:"protocols" json:"protocols"` // http1, http2, h2c
+	TLS                  *ListenerTLS   `yaml:"tls,omitempty" json:"tls,omitempty"`
+	ReadHeaderTimeout    time.Duration  `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
+	IdleTimeout          time.Duration  `yaml:"idleTimeout" json:"idleTimeout"`
+	MaxHeaderBytes       ByteSize       `yaml:"maxHeaderBytes" json:"maxHeaderBytes"`
+	MaxConcurrentStreams int            `yaml:"maxConcurrentStreams" json:"maxConcurrentStreams"`
+	ProxyProtocol        *ProxyProtocol `yaml:"proxyProtocol,omitempty" json:"proxyProtocol,omitempty"`
+}
+
+// ProxyProtocol accepts HAProxy PROXY v1/v2 headers from load balancers.
+type ProxyProtocol struct {
+	// TrustedCIDRs may send headers (empty: every peer). Other peers are
+	// served as plain connections and cannot spoof their address.
+	TrustedCIDRs []string `yaml:"trustedCIDRs,omitempty" json:"trustedCIDRs,omitempty"`
+	// Optional accepts trusted connections without a header.
+	Optional      bool          `yaml:"optional" json:"optional"`
+	HeaderTimeout time.Duration `yaml:"headerTimeout" json:"headerTimeout"`
 }
 
 type ListenerTLS struct {
@@ -161,8 +174,24 @@ type Policy struct {
 	Masking     *Masking     `yaml:"masking,omitempty" json:"masking,omitempty"`
 	Headers     *Headers     `yaml:"headers,omitempty" json:"headers,omitempty"`
 	GraphQL     *GraphQL     `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	ExtAuthz    *ExtAuthz    `yaml:"extAuthz,omitempty" json:"extAuthz,omitempty"`
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
+	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+}
+
+// Cache stores GET responses in the gateway's shared in-memory cache,
+// honoring Cache-Control (s-maxage, max-age, no-store, private) and Vary.
+type Cache struct {
+	// DefaultTTL applies when the upstream sends no freshness information.
+	// Zero means such responses are not cached.
+	DefaultTTL    time.Duration `yaml:"defaultTTL" json:"defaultTTL"`
+	MaxEntryBytes ByteSize      `yaml:"maxEntryBytes" json:"maxEntryBytes"`
+	// Shared lets different consumers share entries. Leave false whenever
+	// responses may differ per caller (masking unlessScope, per-user data).
+	Shared bool `yaml:"shared" json:"shared"`
+	// KeyHeaders adds request headers to the cache key.
+	KeyHeaders []string `yaml:"keyHeaders,omitempty" json:"keyHeaders,omitempty"`
 }
 
 type Compression struct {
@@ -171,6 +200,24 @@ type Compression struct {
 	MinBytes   ByteSize `yaml:"minBytes" json:"minBytes"`
 	// Types are compressible media types; a trailing "/*" matches a family.
 	Types []string `yaml:"types,omitempty" json:"types,omitempty"`
+}
+
+// ExtAuthz delegates the allow/deny decision to an external HTTP service,
+// compatible with Envoy's HTTP ext_authz contract: the gateway sends the
+// request method, path and selected headers (no body) to url+path; a 2xx
+// response allows the request, anything else denies it.
+type ExtAuthz struct {
+	URL     string        `yaml:"url" json:"url"`
+	Timeout time.Duration `yaml:"timeout" json:"timeout"`
+	// FailOpen allows requests when the authorization service is unreachable.
+	FailOpen bool `yaml:"failOpen" json:"failOpen"`
+	// AllowedHeaders are copied from the client request to the check request.
+	// Authorization, Cookie and X-Request-Id are always included.
+	AllowedHeaders []string `yaml:"allowedHeaders,omitempty" json:"allowedHeaders,omitempty"`
+	// UpstreamHeaders are copied from an allow response onto the upstream request.
+	UpstreamHeaders []string `yaml:"upstreamHeaders,omitempty" json:"upstreamHeaders,omitempty"`
+	// ClientHeaders are copied from a deny response onto the client response.
+	ClientHeaders []string `yaml:"clientHeaders,omitempty" json:"clientHeaders,omitempty"`
 }
 
 type CORS struct {
@@ -191,6 +238,19 @@ type AuthN struct {
 	Introspection *Introspection `yaml:"introspection,omitempty" json:"introspection,omitempty"`
 	APIKey        *APIKey        `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
 	MTLS          *MTLS          `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+	HMAC          *HMAC          `yaml:"hmac,omitempty" json:"hmac,omitempty"`
+}
+
+// HMAC verifies signed requests. Clients send X-Signature-Key,
+// X-Signature-Timestamp (unix seconds) and X-Signature: v1=<hex>, where the
+// HMAC-SHA256 covers "v1\n<ts>\n<METHOD>\n<path?query>\n<host>\n<sha256(body)>"
+// followed by "\n<name>:<value>" for each signed header.
+type HMAC struct {
+	// ClockSkew is the accepted timestamp drift (default 5m).
+	ClockSkew time.Duration `yaml:"clockSkew" json:"clockSkew"`
+	// SignedHeaders must be present and are covered by the signature.
+	SignedHeaders []string `yaml:"signedHeaders,omitempty" json:"signedHeaders,omitempty"`
+	MaxBodyBytes  ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 }
 
 // Introspection validates opaque bearer tokens with an RFC 7662 endpoint.
@@ -232,7 +292,9 @@ type Consumer struct {
 	Name string `yaml:"name" json:"name"`
 	// APIKeys are raw keys or "sha256:<hex>" digests.
 	APIKeys []string `yaml:"apiKeys,omitempty" json:"apiKeys,omitempty"`
-	Scopes  []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	// HMACKeys maps signing key IDs to shared secrets.
+	HMACKeys map[string]string `yaml:"hmacKeys,omitempty" json:"hmacKeys,omitempty"`
+	Scopes   []string          `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 }
 
 type AuthZ struct {
@@ -264,6 +326,9 @@ type Masking struct {
 	OnFailure      string     `yaml:"onFailure,omitempty" json:"onFailure,omitempty"` // closed (default) | open
 	MaxBufferBytes ByteSize   `yaml:"maxBufferBytes" json:"maxBufferBytes"`
 	HashKey        string     `yaml:"hashKey,omitempty" json:"hashKey,omitempty"`
+	// DescriptorSet is a FileDescriptorSet (protoc --include_imports
+	// --descriptor_set_out=...) used to mask gRPC response messages.
+	DescriptorSet string `yaml:"descriptorSet,omitempty" json:"descriptorSet,omitempty"`
 }
 
 type MaskRule struct {
@@ -291,6 +356,21 @@ type GraphQL struct {
 	MaxCost            int  `yaml:"maxCost" json:"maxCost"`
 	MaxBatch           int  `yaml:"maxBatch" json:"maxBatch"`
 	BlockIntrospection bool `yaml:"blockIntrospection" json:"blockIntrospection"`
+	// Schema (inline SDL) or SchemaFile enables validation against the
+	// schema and field-level authorization.
+	Schema     string       `yaml:"schema,omitempty" json:"schema,omitempty"`
+	SchemaFile string       `yaml:"schemaFile,omitempty" json:"schemaFile,omitempty"`
+	FieldAuthz []FieldAuthz `yaml:"fieldAuthz,omitempty" json:"fieldAuthz,omitempty"`
+}
+
+// FieldAuthz guards a schema coordinate ("User.email", or "User.*" for every
+// field of a type).
+type FieldAuthz struct {
+	Coordinate string   `yaml:"coordinate" json:"coordinate"`
+	Scopes     []string `yaml:"scopes" json:"scopes"`
+	// OnDeny: reject (default) fails the operation; strip removes the field
+	// from the query and forwards the rest.
+	OnDeny string `yaml:"onDeny,omitempty" json:"onDeny,omitempty"`
 }
 
 type Route struct {
@@ -308,6 +388,7 @@ type Route struct {
 	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
 	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
+	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
 	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
@@ -348,6 +429,17 @@ type Retries struct {
 	Budget             float64       `yaml:"budget" json:"budget"`
 	Backoff            time.Duration `yaml:"backoff" json:"backoff"`
 	AllowNonIdempotent bool          `yaml:"allowNonIdempotent" json:"allowNonIdempotent"`
+}
+
+// Mirror copies a sample of a route's traffic to a shadow cluster. Shadow
+// responses are discarded; the Host header gets a "-shadow" suffix.
+type Mirror struct {
+	Cluster      string        `yaml:"cluster" json:"cluster"`
+	Percent      float64       `yaml:"percent" json:"percent"`
+	MaxBodyBytes ByteSize      `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	Timeout      time.Duration `yaml:"timeout" json:"timeout"`
+	// MaxConcurrent caps in-flight shadow requests; extra ones are dropped.
+	MaxConcurrent int `yaml:"maxConcurrent" json:"maxConcurrent"`
 }
 
 type Backend struct {
