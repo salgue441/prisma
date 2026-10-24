@@ -2,7 +2,7 @@
 #
 # 1. Install the Gateway API CRDs (standard channel):
 #      kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
-#    For GRPCRoute on older releases use the experimental channel.
+#    TLSRoute and TCPRoute need the experimental channel (experimental-install.yaml).
 # 2. kubectl apply -f deploy/kubernetes/gateway-api.yaml
 # 3. Create Gateways with gatewayClassName: prisma, attach HTTPRoutes and
 #    GRPCRoutes, and attach Prisma features with PrismaPolicy. See
@@ -89,10 +89,10 @@ metadata:
   name: prisma-gateway-controller
 rules:
   - apiGroups: [gateway.networking.k8s.io]
-    resources: [gatewayclasses, gateways, httproutes, grpcroutes, referencegrants]
+    resources: [gatewayclasses, gateways, httproutes, grpcroutes, tlsroutes, tcproutes, referencegrants]
     verbs: [get, list, watch]
   - apiGroups: [gateway.networking.k8s.io]
-    resources: [gatewayclasses/status, gateways/status, httproutes/status, grpcroutes/status]
+    resources: [gatewayclasses/status, gateways/status, httproutes/status, grpcroutes/status, tlsroutes/status, tcproutes/status]
     verbs: [patch, update]
   - apiGroups: [prisma.dev]
     resources: [prismapolicies]

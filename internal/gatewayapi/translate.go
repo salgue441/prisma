@@ -30,6 +30,8 @@ type Input struct {
 	Gateways        map[string]k8s.Object
 	HTTPRoutes      map[string]k8s.Object
 	GRPCRoutes      map[string]k8s.Object
+	TLSRoutes       map[string]k8s.Object
+	TCPRoutes       map[string]k8s.Object
 	ReferenceGrants map[string]k8s.Object
 	Services        map[string]k8s.Object
 	Secrets         map[string]k8s.Object
@@ -82,7 +84,7 @@ type gatewayState struct {
 type portListener struct {
 	name     string
 	port     int
-	protocol string
+	protocol string // HTTP, HTTPS, TCP, TLS (terminate) or TLS-Passthrough
 	certs    []config.Certificate
 }
 
@@ -185,32 +187,72 @@ func listenerFailure(reason, msg string) []Condition {
 	return conds
 }
 
+// listenerProtocol maps a Gateway listener to the socket behavior it needs:
+// HTTP, HTTPS, TCP, TLS (terminated, then proxied as TCP) or
+// TLS-Passthrough. It returns a failure reason for unsupported listeners.
+func listenerProtocol(l listener) (string, string, string) {
+	mode := "Terminate"
+	if l.TLS != nil {
+		mode = deref(l.TLS.Mode, "Terminate")
+	}
+	switch l.Protocol {
+	case "HTTP", "TCP":
+		return l.Protocol, "", ""
+	case "HTTPS":
+		if mode != "Terminate" {
+			return "", "UnsupportedProtocol", "HTTPS listeners support only TLS mode Terminate"
+		}
+		return "HTTPS", "", ""
+	case "TLS":
+		switch mode {
+		case "Passthrough":
+			return "TLS-Passthrough", "", ""
+		case "Terminate":
+			return "TLS", "", ""
+		}
+		return "", "UnsupportedProtocol", "unknown TLS mode " + mode
+	}
+	return "", "UnsupportedProtocol", fmt.Sprintf("protocol %s is not supported (HTTP, HTTPS, TLS and TCP are)", l.Protocol)
+}
+
+// supportedKinds lists the route kinds a listener accepts: the kinds its
+// protocol can carry, narrowed by allowedRoutes.kinds.
 func supportedKinds(l listener) []string {
+	proto, _, _ := listenerProtocol(l)
+	var kinds []string
+	switch proto {
+	case "HTTP", "HTTPS":
+		kinds = []string{KindHTTPRoute, KindGRPCRoute}
+	case "TLS-Passthrough":
+		kinds = []string{KindTLSRoute}
+	case "TLS":
+		kinds = []string{KindTLSRoute, KindTCPRoute}
+	case "TCP":
+		kinds = []string{KindTCPRoute}
+	}
 	if l.AllowedRoutes != nil && len(l.AllowedRoutes.Kinds) > 0 {
 		var out []string
 		for _, k := range l.AllowedRoutes.Kinds {
-			if k.Kind == KindHTTPRoute || k.Kind == KindGRPCRoute {
+			if slices.Contains(kinds, k.Kind) {
 				out = append(out, k.Kind)
 			}
 		}
 		return out
 	}
-	return []string{KindHTTPRoute, KindGRPCRoute}
+	return kinds
 }
 
 // programListener resolves a listener into a port socket, returning a
 // failure reason (empty on success).
 func (t *translator) programListener(gw gateway, l listener, a *attachable) (string, string) {
-	if l.Protocol != "HTTP" && l.Protocol != "HTTPS" {
-		return "UnsupportedProtocol", fmt.Sprintf("protocol %s is not supported (HTTP and HTTPS are)", l.Protocol)
+	proto, reason, msg := listenerProtocol(l)
+	if reason != "" {
+		return reason, msg
 	}
 	var certs []config.Certificate
-	if l.Protocol == "HTTPS" {
-		if l.TLS != nil && deref(l.TLS.Mode, "Terminate") != "Terminate" {
-			return "UnsupportedProtocol", "only TLS mode Terminate is supported"
-		}
+	if proto == "HTTPS" || proto == "TLS" {
 		if l.TLS == nil || len(l.TLS.CertificateRefs) == 0 {
-			return "InvalidCertificateRef", "HTTPS listeners need tls.certificateRefs"
+			return "InvalidCertificateRef", l.Protocol + " listeners that terminate TLS need tls.certificateRefs"
 		}
 		for _, ref := range l.TLS.CertificateRefs {
 			cert, reason, msg := t.resolveCert(gw, ref)
@@ -222,9 +264,9 @@ func (t *translator) programListener(gw gateway, l listener, a *attachable) (str
 	}
 	pl := t.ports[l.Port]
 	if pl == nil {
-		pl = &portListener{name: fmt.Sprintf("k8s/port/%d", l.Port), port: l.Port, protocol: l.Protocol}
+		pl = &portListener{name: fmt.Sprintf("k8s/port/%d", l.Port), port: l.Port, protocol: proto}
 		t.ports[l.Port] = pl
-	} else if pl.protocol != l.Protocol {
+	} else if pl.protocol != proto {
 		return "ProtocolConflict", fmt.Sprintf("port %d is already used with protocol %s", l.Port, pl.protocol)
 	}
 	// Two listeners on one port must differ by hostname.
@@ -380,7 +422,10 @@ type routeObj struct {
 	hosts []string
 	http  *httpRoute
 	grpc  *grpcRoute
+	l4    []l4Rule // TLSRoute and TCPRoute rules
 }
+
+func (r routeObj) isL4() bool { return r.kind == KindTLSRoute || r.kind == KindTCPRoute }
 
 type attachment struct {
 	gwKey  string
@@ -400,6 +445,18 @@ func (t *translator) translateRoutes() {
 		var r grpcRoute
 		if json.Unmarshal(o.Raw, &r) == nil {
 			routes = append(routes, routeObj{kind: KindGRPCRoute, meta: r.Metadata, refs: r.Spec.ParentRefs, hosts: r.Spec.Hostnames, grpc: &r})
+		}
+	}
+	for _, o := range t.in.TLSRoutes {
+		var r tlsRoute
+		if json.Unmarshal(o.Raw, &r) == nil {
+			routes = append(routes, routeObj{kind: KindTLSRoute, meta: r.Metadata, refs: r.Spec.ParentRefs, hosts: r.Spec.Hostnames, l4: r.Spec.Rules})
+		}
+	}
+	for _, o := range t.in.TCPRoutes {
+		var r tcpRoute
+		if json.Unmarshal(o.Raw, &r) == nil {
+			routes = append(routes, routeObj{kind: KindTCPRoute, meta: r.Metadata, refs: r.Spec.ParentRefs, l4: r.Spec.Rules})
 		}
 	}
 	// Gateway API precedence ties: oldest first, then namespace/name.
@@ -439,9 +496,12 @@ func (t *translator) route(r routeObj) {
 	if len(attachments) > 0 {
 		var rules []ruleOut
 		var err error
-		if r.http != nil {
+		switch {
+		case r.isL4():
+			rules, resolved, problems = t.l4Rules(r)
+		case r.http != nil:
 			rules, resolved, problems, err = t.httpRules(r)
-		} else {
+		default:
 			rules, resolved, problems, err = t.grpcRules(r)
 		}
 		if err != nil {
@@ -505,6 +565,9 @@ func (t *translator) attach(r routeObj, gwKey string, pr parentRef) ([]attachmen
 		if !ok {
 			reason, msg = "NoMatchingListenerHostname", "no route hostname matches listener "+a.l.Name
 			continue
+		}
+		if a.merged.protocol == "TCP" {
+			hosts = nil // plain TCP has no SNI to match
 		}
 		a.status.AttachedRoutes++
 		out = append(out, attachment{gwKey: gwKey, merged: a.merged, hosts: hosts})
@@ -571,7 +634,9 @@ func (t *translator) emit(r routeObj, rules []ruleOut, atts []attachment) {
 			cr.Name = fmt.Sprintf("k8s/%s/%s/%s/r%d/m%d/a%d", strings.ToLower(r.kind), r.meta.Namespace, r.meta.Name, ro.rule, ro.match, ai)
 			cr.Listeners = []string{a.merged.name}
 			cr.Match.Hosts = a.hosts
-			cr.Use = append(slices.Clone(use), cr.Use...)
+			if !r.isL4() { // tcp routes take no policies
+				cr.Use = append(slices.Clone(use), cr.Use...)
+			}
 			t.out.Routes = append(t.out.Routes, cr)
 		}
 	}
@@ -895,10 +960,20 @@ func (t *translator) cluster(ref backendRef, r routeObj, proto string) (string, 
 
 func (t *translator) finish() {
 	for _, pl := range t.ports {
-		l := config.Listener{Name: pl.name, Address: ":" + strconv.Itoa(pl.port), Protocols: []string{"http1", "h2c"}}
-		if pl.protocol == "HTTPS" {
+		l := config.Listener{Name: pl.name, Address: ":" + strconv.Itoa(pl.port)}
+		switch pl.protocol {
+		case "HTTP":
+			l.Protocols = []string{"http1", "h2c"}
+		case "HTTPS":
 			l.Protocols = []string{"http1", "http2"}
 			l.TLS = &config.ListenerTLS{Certificates: pl.certs}
+		case "TCP":
+			l.Type = config.ListenerTCP
+		case "TLS":
+			l.Type = config.ListenerTCP
+			l.TLS = &config.ListenerTLS{Certificates: pl.certs}
+		case "TLS-Passthrough":
+			l.Type = config.ListenerTLSPassthrough
 		}
 		t.out.Listeners = append(t.out.Listeners, l)
 	}
@@ -955,4 +1030,33 @@ func sortedObjects(m map[string]k8s.Object) []k8s.Object {
 func dedupe(s []string) []string {
 	slices.Sort(s)
 	return slices.Compact(s)
+}
+
+// l4Rules turns TLSRoute and TCPRoute rules into one tcp route whose
+// backends are every rule's resolved backendRefs. With none resolved there
+// is no route, so the listener refuses those connections.
+func (t *translator) l4Rules(r routeObj) ([]ruleOut, bool, []string) {
+	cr := config.Route{Type: config.RouteTCP}
+	var problems []string
+	for _, rule := range r.l4 {
+		for _, ref := range rule.BackendRefs {
+			w := deref(ref.Weight, 1)
+			if w == 0 {
+				continue
+			}
+			name, prob := t.cluster(ref, r, "http1")
+			if prob != "" {
+				problems = append(problems, prob)
+				continue
+			}
+			cr.Backends = append(cr.Backends, config.Backend{Cluster: name, Weight: w})
+		}
+	}
+	if len(cr.Backends) == 0 {
+		if len(problems) == 0 {
+			problems = append(problems, "no backendRefs")
+		}
+		return nil, false, dedupe(problems)
+	}
+	return []ruleOut{{route: cr}}, len(problems) == 0, dedupe(problems)
 }
