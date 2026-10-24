@@ -43,7 +43,7 @@ func (c *Config) Validate() error {
 
 	listeners := map[string]bool{}
 	addresses := map[string]string{}
-	if len(c.Listeners) == 0 {
+	if len(c.Listeners) == 0 && c.GatewayAPI == nil {
 		add("listeners: at least one listener is required")
 	}
 	for i, l := range c.Listeners {
@@ -79,6 +79,12 @@ func (c *Config) Validate() error {
 		if t := l.TLS; t != nil {
 			if len(t.Certificates) == 0 {
 				add("%s: tls requires at least one certificate", where)
+			}
+			for j, cert := range t.Certificates {
+				files, inline := cert.CertFile != "" || cert.KeyFile != "", cert.CertPEM != "" || cert.KeyPEM != ""
+				if files == inline {
+					add("%s: tls.certificates[%d] needs certFile+keyFile or certPEM+keyPEM", where, j)
+				}
 			}
 			if !slices.Contains([]string{"1.2", "1.3"}, t.MinVersion) {
 				add("%s: tls.minVersion must be 1.2 or 1.3", where)
@@ -211,7 +217,7 @@ func (c *Config) Validate() error {
 	}
 
 	routes := map[string]bool{}
-	if len(c.Routes) == 0 {
+	if len(c.Routes) == 0 && c.GatewayAPI == nil {
 		add("routes: at least one route is required")
 	}
 	for i := range c.Routes {
@@ -273,8 +279,15 @@ func (c *Config) Validate() error {
 			if r.Redirect.PathPrefixReplace != "" && m.PathPrefix == "" {
 				add("%s: redirect.pathPrefixReplace requires match.pathPrefix", where)
 			}
+		} else if dr := r.DirectResponse; dr != nil {
+			if len(r.Backends) > 0 {
+				add("%s: directResponse routes cannot have backends", where)
+			}
+			if dr.Status < 100 || dr.Status > 599 {
+				add("%s: directResponse.status must be a valid HTTP status", where)
+			}
 		} else if len(r.Backends) == 0 {
-			add("%s: backends are required unless the route redirects", where)
+			add("%s: backends are required unless the route redirects or responds directly", where)
 		}
 		for _, b := range r.Backends {
 			if !clusters[b.Cluster] {

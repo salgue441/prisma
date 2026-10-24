@@ -65,6 +65,10 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Request = append(ch.Request, redirect.New(rc.Redirect, rc.Match))
 		return h, nil
 	}
+	if rc.DirectResponse != nil {
+		ch.Request = append(ch.Request, redirect.NewDirect(rc.DirectResponse))
+		return h, nil
+	}
 	if pol.CORS != nil {
 		ch.Request = append(ch.Request, cors.New(pol.CORS))
 	}
