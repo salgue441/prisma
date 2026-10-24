@@ -1,0 +1,420 @@
+// Package upstream manages clusters of backend endpoints: connection pools,
+// load balancing, active health checks, passive outlier ejection, circuit
+// breaking and retries.
+package upstream
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand/v2"
+	"net"
+	"net/http"
+	"os"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"prisma/internal/config"
+	"prisma/internal/gwerr"
+	"prisma/internal/pipeline"
+	"prisma/internal/telemetry"
+)
+
+// maxEjection caps outlier ejection backoff.
+const maxEjection = 5 * time.Minute
+
+type Cluster struct {
+	Name      string
+	Config    config.Cluster
+	Scheme    string
+	Endpoints []*Endpoint
+
+	transport *http.Transport
+	balancer  Balancer
+	breaker   *Breaker
+	metrics   *telemetry.Metrics
+
+	active   atomic.Int64
+	retrying atomic.Int64
+	cancel   context.CancelFunc
+}
+
+func NewCluster(cfg config.Cluster, m *telemetry.Metrics) (*Cluster, error) {
+	c := &Cluster{Name: cfg.Name, Config: cfg, Scheme: "http", metrics: m}
+	if cfg.TLS != nil || cfg.Protocol == "http2" {
+		c.Scheme = "https"
+	}
+	t, err := newTransport(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("cluster %s: %w", cfg.Name, err)
+	}
+	c.transport = t
+	for _, e := range cfg.Endpoints {
+		ep := &Endpoint{Address: e.Address, Weight: e.Weight}
+		ep.healthy.Store(true)
+		c.Endpoints = append(c.Endpoints, ep)
+	}
+	c.balancer = newBalancer(cfg.LoadBalancer, c.Endpoints)
+	if cfg.CircuitBreaker != nil {
+		c.breaker = newBreaker(*cfg.CircuitBreaker, func(open bool) {
+			v := 0.0
+			if open {
+				v = 1
+			}
+			m.CircuitOpen.WithLabelValues(cfg.Name).Set(v)
+		})
+	}
+	return c, nil
+}
+
+func newTransport(cfg config.Cluster) (*http.Transport, error) {
+	dialer := &net.Dialer{Timeout: cfg.ConnectTimeout, KeepAlive: 30 * time.Second}
+	t := &http.Transport{
+		DialContext:           dialer.DialContext,
+		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		// The gateway forwards bytes as-is; never decompress transparently.
+		DisableCompression: true,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 30 * time.Second,
+			PingTimeout:     15 * time.Second,
+		},
+	}
+	p := new(http.Protocols)
+	switch cfg.Protocol {
+	case "http2":
+		p.SetHTTP2(true)
+	case "h2c":
+		p.SetUnencryptedHTTP2(true)
+	default:
+		p.SetHTTP1(true)
+	}
+	t.Protocols = p
+
+	tc := &tls.Config{MinVersion: tls.VersionTLS12}
+	if u := cfg.TLS; u != nil {
+		tc.ServerName = u.ServerName
+		tc.InsecureSkipVerify = u.InsecureSkipVerify
+		if u.CAFile != "" {
+			pem, err := os.ReadFile(u.CAFile)
+			if err != nil {
+				return nil, err
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("no certificates in %s", u.CAFile)
+			}
+			tc.RootCAs = pool
+		}
+		if u.CertFile != "" {
+			cert, err := tls.LoadX509KeyPair(u.CertFile, u.KeyFile)
+			if err != nil {
+				return nil, err
+			}
+			tc.Certificates = []tls.Certificate{cert}
+		}
+	}
+	t.TLSClientConfig = tc
+	return t, nil
+}
+
+// Start launches background health checks.
+func (c *Cluster) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	for _, ep := range c.Endpoints {
+		c.reportHealth(ep)
+	}
+	if c.Config.HealthCheck != nil {
+		c.runHealthChecks(ctx)
+	}
+}
+
+// Close stops health checks and, after grace, closes idle connections.
+// In-flight requests keep their connections until they finish.
+func (c *Cluster) Close(grace time.Duration) {
+	if c.cancel != nil {
+		c.cancel()
+	}
+	time.AfterFunc(grace, c.transport.CloseIdleConnections)
+	for _, ep := range c.Endpoints {
+		c.metrics.EndpointHealthy.DeleteLabelValues(c.Name, ep.Address)
+	}
+}
+
+func (c *Cluster) BreakerOpen() bool { return c.breaker != nil && c.breaker.Open() }
+
+// pick selects an endpoint, skipping unhealthy, ejected and already-tried ones.
+// When outlier detection has ejected every healthy endpoint, ejections are
+// ignored rather than failing the whole cluster (panic routing).
+func (c *Cluster) pick(r *http.Request, tried []*Endpoint) *Endpoint {
+	now := time.Now()
+	avail := make([]*Endpoint, 0, len(c.Endpoints))
+	for _, e := range c.Endpoints {
+		if e.Healthy() && !e.Ejected(now) && !slices.Contains(tried, e) {
+			avail = append(avail, e)
+		}
+	}
+	if len(avail) == 0 {
+		for _, e := range c.Endpoints {
+			if e.Healthy() && !slices.Contains(tried, e) {
+				avail = append(avail, e)
+			}
+		}
+	}
+	if len(avail) == 0 {
+		return nil
+	}
+	return c.balancer.Pick(r, avail)
+}
+
+// RetryPolicy is the compiled form of a route's retries config.
+type RetryPolicy struct {
+	Attempts           int
+	Budget             float64
+	Backoff            time.Duration
+	AllowNonIdempotent bool
+	on                 map[string]bool
+}
+
+func NewRetryPolicy(cfg *config.Retries) *RetryPolicy {
+	if cfg == nil || cfg.Attempts == 0 {
+		return nil
+	}
+	p := &RetryPolicy{Attempts: cfg.Attempts, Budget: cfg.Budget, Backoff: cfg.Backoff,
+		AllowNonIdempotent: cfg.AllowNonIdempotent, on: map[string]bool{}}
+	for _, o := range cfg.On {
+		p.on[o] = true
+	}
+	return p
+}
+
+func (p *RetryPolicy) eligible(r *http.Request) bool {
+	if p == nil {
+		return false
+	}
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPut, http.MethodDelete, http.MethodTrace:
+	default:
+		if !p.AllowNonIdempotent {
+			return false
+		}
+	}
+	return r.Body == nil || r.Body == http.NoBody || r.GetBody != nil
+}
+
+type retryKey struct{}
+
+func WithRetryPolicy(ctx context.Context, p *RetryPolicy) context.Context {
+	if p == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, retryKey{}, p)
+}
+
+// RoundTrip implements http.RoundTripper. The ReverseProxy hands it a request
+// without a concrete host; each attempt fills in the picked endpoint.
+func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	pc := pipeline.From(ctx)
+	policy, _ := ctx.Value(retryKey{}).(*RetryPolicy)
+	maxAttempts := 1
+	if policy.eligible(req) {
+		maxAttempts += policy.Attempts
+	}
+	c.active.Add(1)
+	defer c.active.Add(-1)
+	retries := int64(0)
+	defer func() { c.retrying.Add(-retries) }()
+
+	var tried []*Endpoint
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			retries++
+			c.retrying.Add(1)
+			c.metrics.Retries.WithLabelValues(c.Name).Inc()
+			if err := sleepBackoff(ctx, policy.Backoff, attempt); err != nil {
+				return nil, err
+			}
+			if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				req.Body = body
+			}
+		}
+		ep := c.pick(req, tried)
+		if ep == nil {
+			return nil, gwerr.Unavailable("no healthy upstream").WithReason("cluster %s has no available endpoints", c.Name)
+		}
+		tried = append(tried, ep)
+
+		var done func(bool)
+		if c.breaker != nil {
+			d, err := c.breaker.Allow()
+			if err != nil {
+				return nil, err
+			}
+			done = d
+		}
+
+		out := req.WithContext(ctx)
+		u := *req.URL
+		u.Scheme, u.Host = c.Scheme, ep.Address
+		out.URL = &u
+
+		ep.inflight.Add(1)
+		start := time.Now()
+		resp, err := c.transport.RoundTrip(out)
+		latency := time.Since(start)
+
+		failure, retryable := classify(resp, err, policy)
+		if err == nil {
+			ep.observeLatency(latency)
+		}
+		c.outlier(ep, failure)
+		if done != nil {
+			done(!failure)
+		}
+		outcome := "success"
+		if failure {
+			outcome = "failure"
+		}
+		c.metrics.UpstreamRequests.WithLabelValues(c.Name, ep.Address, outcome).Inc()
+		c.metrics.UpstreamDuration.WithLabelValues(c.Name).Observe(latency.Seconds())
+		if pc != nil {
+			pc.Cluster, pc.Endpoint, pc.Attempts, pc.UpstreamLatency = c.Name, ep.Address, attempt+1, latency
+		}
+
+		canRetry := retryable && attempt+1 < maxAttempts && c.budgetAllows(policy)
+		if !canRetry {
+			if err != nil {
+				ep.inflight.Add(-1)
+				return nil, err
+			}
+			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() { ep.inflight.Add(-1) }}
+			return resp, nil
+		}
+		ep.inflight.Add(-1)
+		if resp != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			resp.Body.Close()
+		}
+	}
+}
+
+// classify reports whether the attempt counts as an upstream failure (for
+// breakers and outlier detection) and whether the policy allows a retry.
+func classify(resp *http.Response, err error, p *RetryPolicy) (failure, retryable bool) {
+	on := func(k string) bool { return p != nil && p.on[k] }
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return false, false
+		case errors.Is(err, context.DeadlineExceeded):
+			return true, false
+		}
+		return true, on("connect-failure")
+	}
+	code := resp.StatusCode
+	grpcUnavailable := resp.Header.Get("Grpc-Status") == "14"
+	failure = code == 502 || code == 503 || code == 504 || grpcUnavailable
+	retryable = (on("5xx") && code >= 500) || on(strconv.Itoa(code)) || (on("unavailable") && grpcUnavailable)
+	return failure, retryable
+}
+
+// budgetAllows caps concurrent retries to a fraction of active requests so a
+// struggling cluster is not hit by a retry storm.
+func (c *Cluster) budgetAllows(p *RetryPolicy) bool {
+	limit := max(int64(float64(c.active.Load())*p.Budget), 3)
+	return c.retrying.Load() < limit
+}
+
+func (c *Cluster) outlier(ep *Endpoint, failure bool) {
+	od := c.Config.OutlierDetection
+	if od == nil {
+		return
+	}
+	if !failure {
+		ep.consecFailures.Store(0)
+		return
+	}
+	if int(ep.consecFailures.Add(1)) < od.ConsecutiveFailures {
+		return
+	}
+	ep.consecFailures.Store(0)
+	now := time.Now()
+	ejected := 0
+	for _, e := range c.Endpoints {
+		if e.Ejected(now) {
+			ejected++
+		}
+	}
+	if (ejected+1)*100 > od.MaxEjectionPercent*len(c.Endpoints) {
+		return
+	}
+	n := ep.ejections.Add(1)
+	d := od.BaseEjection << min(n-1, 10)
+	if d > maxEjection || d <= 0 {
+		d = maxEjection
+	}
+	ep.ejectedUntil.Store(now.Add(d).UnixNano())
+}
+
+func sleepBackoff(ctx context.Context, base time.Duration, attempt int) error {
+	d := base << min(attempt-1, 4)
+	d = d/2 + time.Duration(rand.Int64N(int64(d/2)+1))
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// trackedBody runs done exactly once when the body is closed, so in-flight
+// counts cover the full duration of streaming responses.
+type trackedBody struct {
+	io.ReadCloser
+	once sync.Once
+	done func()
+}
+
+func (b *trackedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.done)
+	return err
+}
+
+// EndpointStatus is a point-in-time view for the Admin API.
+type EndpointStatus struct {
+	Address  string  `json:"address"`
+	Weight   int     `json:"weight"`
+	Healthy  bool    `json:"healthy"`
+	Ejected  bool    `json:"ejected"`
+	Inflight int64   `json:"inflight"`
+	EWMAms   float64 `json:"ewmaMs"`
+}
+
+func (c *Cluster) Status() []EndpointStatus {
+	now := time.Now()
+	out := make([]EndpointStatus, 0, len(c.Endpoints))
+	for _, e := range c.Endpoints {
+		out = append(out, EndpointStatus{
+			Address: e.Address, Weight: e.Weight, Healthy: e.Healthy(), Ejected: e.Ejected(now),
+			Inflight: e.Inflight(), EWMAms: float64(e.EWMA()) / float64(time.Millisecond),
+		})
+	}
+	return out
+}
