@@ -1,0 +1,31 @@
+# OpenAPI validation: requests that don't match the API contract are
+# rejected at the gateway with a precise error, before reaching the service.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/16-openapi/prisma.yaml
+# Run from the repository root (specFile is relative to it).
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: shop
+    endpoints: [{address: "localhost:9001"}]
+
+routes:
+  - name: api
+    match: {pathPrefix: /api}
+    openapi:
+      specFile: examples/16-openapi/orders.yaml
+      # The document's server URL ends in /api, so /api/orders/1 matches the
+      # path /orders/{id}. Set basePath when clients use another prefix.
+      mode: enforce              # or report: log and count, but forward
+      unknownOperations: reject  # 404/405 for anything the document lacks
+      responses: report          # check upstream responses against the document too
+    rewrite: {stripPrefix: /api}
+    backends: [{cluster: shop}]

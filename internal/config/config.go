@@ -237,8 +237,31 @@ type Policy struct {
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
 	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+	OpenAPI     *OpenAPI     `yaml:"openapi,omitempty" json:"openapi,omitempty"`
 	// Plugins run in order; they accumulate across global, policy and route.
 	Plugins []string `yaml:"plugins,omitempty" json:"plugins,omitempty"`
+}
+
+// OpenAPI validates requests (path, query, headers, cookies and body)
+// against an OpenAPI 3 document before they reach the upstream.
+type OpenAPI struct {
+	// Spec is an inline document (YAML or JSON); SpecFile a path to one.
+	Spec     string `yaml:"spec,omitempty" json:"spec,omitempty"`
+	SpecFile string `yaml:"specFile,omitempty" json:"specFile,omitempty"`
+	// BasePath is the part of request paths before the document's paths,
+	// e.g. /api/v1 when clients call /api/v1/orders for the path /orders.
+	// Default: the path of the document's first server URL.
+	BasePath string `yaml:"basePath,omitempty" json:"basePath,omitempty"`
+	// Mode: enforce (default) rejects invalid requests with 400; report
+	// only logs and counts them.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// UnknownOperations: reject (default) answers 404/405 for paths and
+	// methods the document does not define; allow forwards them unchecked.
+	UnknownOperations string `yaml:"unknownOperations,omitempty" json:"unknownOperations,omitempty"`
+	// Responses: off (default) | report. report validates upstream JSON
+	// responses and logs mismatches; responses are never blocked.
+	Responses    string   `yaml:"responses,omitempty" json:"responses,omitempty"`
+	MaxBodyBytes ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 }
 
 // Cache stores GET responses in the gateway's shared in-memory cache,
