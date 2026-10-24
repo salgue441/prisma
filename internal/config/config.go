@@ -227,6 +227,19 @@ type AuthN struct {
 	Introspection *Introspection `yaml:"introspection,omitempty" json:"introspection,omitempty"`
 	APIKey        *APIKey        `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
 	MTLS          *MTLS          `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+	HMAC          *HMAC          `yaml:"hmac,omitempty" json:"hmac,omitempty"`
+}
+
+// HMAC verifies signed requests. Clients send X-Signature-Key,
+// X-Signature-Timestamp (unix seconds) and X-Signature: v1=<hex>, where the
+// HMAC-SHA256 covers "v1\n<ts>\n<METHOD>\n<path?query>\n<host>\n<sha256(body)>"
+// followed by "\n<name>:<value>" for each signed header.
+type HMAC struct {
+	// ClockSkew is the accepted timestamp drift (default 5m).
+	ClockSkew time.Duration `yaml:"clockSkew" json:"clockSkew"`
+	// SignedHeaders must be present and are covered by the signature.
+	SignedHeaders []string `yaml:"signedHeaders,omitempty" json:"signedHeaders,omitempty"`
+	MaxBodyBytes  ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 }
 
 // Introspection validates opaque bearer tokens with an RFC 7662 endpoint.
@@ -268,7 +281,9 @@ type Consumer struct {
 	Name string `yaml:"name" json:"name"`
 	// APIKeys are raw keys or "sha256:<hex>" digests.
 	APIKeys []string `yaml:"apiKeys,omitempty" json:"apiKeys,omitempty"`
-	Scopes  []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	// HMACKeys maps signing key IDs to shared secrets.
+	HMACKeys map[string]string `yaml:"hmacKeys,omitempty" json:"hmacKeys,omitempty"`
+	Scopes   []string          `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 }
 
 type AuthZ struct {

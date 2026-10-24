@@ -263,6 +263,9 @@ func (c *Config) Redacted() *Config {
 		for j := range cp.Consumers[i].APIKeys {
 			cp.Consumers[i].APIKeys[j] = r
 		}
+		for k := range cp.Consumers[i].HMACKeys {
+			cp.Consumers[i].HMACKeys[k] = r
+		}
 	}
 	redactPolicy := func(p *Policy) {
 		if p.AuthN != nil && p.AuthN.JWT != nil && p.AuthN.JWT.Secret != "" {

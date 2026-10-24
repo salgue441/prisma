@@ -146,6 +146,7 @@ func (c *Config) Validate() error {
 	}
 
 	consumers := map[string]bool{}
+	hmacKeyOwner := map[string]string{}
 	for i, cs := range c.Consumers {
 		if cs.Name == "" {
 			add("consumers[%d]: name is required", i)
@@ -153,6 +154,15 @@ func (c *Config) Validate() error {
 			add("consumers[%d]: duplicate consumer %q", i, cs.Name)
 		}
 		consumers[cs.Name] = true
+		for id, secret := range cs.HMACKeys {
+			if hmacKeyOwner[id] != "" {
+				add("consumers[%d]: hmac key id %q is also used by %q", i, id, hmacKeyOwner[id])
+			}
+			hmacKeyOwner[id] = cs.Name
+			if len(secret) < 32 {
+				add("consumers[%d]: hmac key %q must be at least 32 bytes", i, id)
+			}
+		}
 	}
 
 	routes := map[string]bool{}
@@ -272,8 +282,8 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		if !slices.Contains([]string{"", "any", "all"}, a.Mode) {
 			add("%s: authn.mode must be any or all", where)
 		}
-		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil {
-			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls)", where)
+		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil && a.HMAC == nil {
+			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls, hmac)", where)
 		}
 		if in := a.Introspection; in != nil {
 			if u, err := url.Parse(in.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
