@@ -1,0 +1,106 @@
+# Prisma local development configuration.
+# Run the demo upstreams first:   go run ./cmd/demo-upstream
+# Then the gateway:               go run ./cmd/prisma -config configs/prisma.yaml
+# Secrets come from the environment: PRISMA_JWT_SECRET, PRISMA_DEMO_API_KEY.
+apiVersion: prisma/v1
+
+global:
+  requestTimeout: 30s
+  maxBodyBytes: 10MiB
+  trustedProxies: [127.0.0.1/32]
+  shutdownDelay: 0s
+  drainTimeout: 15s
+
+admin:
+  address: 127.0.0.1:9901
+  pprof: true
+
+# Uncomment to enable cluster-wide rate limits (docker compose starts Redis).
+# redis:
+#   address: localhost:6379
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]   # h2c lets gRPC clients connect without TLS locally
+
+clusters:
+  - name: orders
+    endpoints:
+      - {address: "localhost:9001", weight: 1}
+    loadBalancer: {policy: round_robin}
+    healthCheck: {type: http, path: /health, interval: 5s}
+    outlierDetection: {consecutiveFailures: 5, baseEjection: 30s}
+    circuitBreaker: {errorRatio: 0.5, window: 10s, minRequests: 20, openDuration: 15s}
+
+  - name: graph
+    endpoints: [{address: "localhost:9002"}]
+
+  - name: inventory-grpc
+    protocol: h2c
+    endpoints: [{address: "localhost:9003"}]
+    loadBalancer: {policy: p2c_ewma}
+    healthCheck: {type: grpc, interval: 5s}
+
+policies:
+  auth:
+    authn:
+      jwt:
+        secret: "${env:PRISMA_JWT_SECRET}"
+        issuer: https://auth.local/
+        audiences: [prisma-demo]
+      apiKey: {header: X-API-Key}
+  standard-limits:
+    rateLimit:
+      - {name: per-consumer, key: [consumer], limit: 20, period: 1s, burst: 40}
+  pii:
+    masking:
+      rules:
+        - {selector: "$..ssn", strategy: redact}
+        - {selector: "$..cardNumber", strategy: partial, keepLast: 4}
+        - {detector: email, strategy: hash}
+      unlessScope: pii:read
+      onFailure: closed
+
+consumers:
+  - name: demo-partner
+    apiKeys: ["${env:PRISMA_DEMO_API_KEY}"]
+    scopes: [orders:read, inventory:read]
+
+routes:
+  - name: legacy-orders
+    match: {pathPrefix: /api/v0/orders}
+    redirect: {pathPrefixReplace: /api/v1/orders, status: 308}
+
+  - name: orders
+    match: {pathPrefix: /api/v1/orders}
+    use: [auth, standard-limits, pii]
+    authz:
+      scopes: [orders:read]
+      methods: {POST: [orders:write], DELETE: [orders:write]}
+    rewrite: {stripPrefix: /api/v1}
+    retries: {attempts: 2, on: [connect-failure, "503"]}
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+      response: {remove: [Server]}
+    backends: [{cluster: orders}]
+
+  - name: graphql
+    type: graphql
+    match: {path: /graphql}
+    use: [auth, pii]
+    graphql: {maxDepth: 8, maxAliases: 20, maxCost: 500, blockIntrospection: false}
+    rateLimit:
+      - {name: query-cost, key: [consumer], limit: 2000, period: 1m, cost: graphql}
+    backends: [{cluster: graph}]
+
+  - name: inventory
+    type: grpc
+    match: {grpcService: grpc.health.v1.Health}
+    use: [auth, standard-limits]
+    authz: {scopes: [inventory:read]}
+    backends: [{cluster: inventory-grpc}]
+
+  - name: public-health
+    match: {path: /health}
+    backends: [{cluster: orders}]
