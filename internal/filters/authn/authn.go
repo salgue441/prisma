@@ -76,6 +76,11 @@ func New(route string, cfg *config.AuthN, consumers *Consumers, reg *Registry, m
 		}
 		f.providers = append(f.providers, p)
 	}
+	// After JWT: in "any" mode, self-contained tokens are verified locally
+	// and only opaque ones cost an introspection round-trip.
+	if cfg.Introspection != nil {
+		f.providers = append(f.providers, newIntrospectionProvider(cfg.Introspection, reg))
+	}
 	return f, nil
 }
 
@@ -83,7 +88,7 @@ func (f *Filter) Name() string { return "authn" }
 
 func (f *Filter) OnRequest(c *pipeline.Context) pipeline.Responder {
 	var principal *pipeline.Principal
-	var firstErr error
+	var firstErr, unavailable error
 	for _, p := range f.providers {
 		pr, err := p.authenticate(c)
 		switch {
@@ -99,6 +104,8 @@ func (f *Filter) OnRequest(c *pipeline.Context) pipeline.Responder {
 			}
 		case f.all:
 			return f.reject(err)
+		case errors.Is(err, errUnavailable):
+			unavailable = err
 		case !errors.Is(err, errNoCredentials) && firstErr == nil:
 			firstErr = err
 		}
@@ -106,6 +113,11 @@ func (f *Filter) OnRequest(c *pipeline.Context) pipeline.Responder {
 	if principal != nil {
 		c.Principal = principal
 		return nil
+	}
+	// An outage outranks other providers' rejections: the token may well be
+	// valid, so the client should retry rather than re-authenticate.
+	if unavailable != nil {
+		return f.reject(unavailable)
 	}
 	if firstErr != nil {
 		return f.reject(firstErr)
@@ -117,6 +129,10 @@ func (f *Filter) OnRequest(c *pipeline.Context) pipeline.Responder {
 }
 
 func (f *Filter) reject(err error) pipeline.Responder {
+	if errors.Is(err, errUnavailable) {
+		f.metrics.AuthFailures.WithLabelValues(f.route, "idp_unavailable").Inc()
+		return gwerr.Unavailable("authentication service unavailable").WithReason("%v", err)
+	}
 	reason := "invalid_credentials"
 	if errors.Is(err, errNoCredentials) {
 		reason = "missing_credentials"

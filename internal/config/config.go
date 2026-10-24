@@ -185,11 +185,26 @@ type CORS struct {
 }
 
 type AuthN struct {
-	Mode     string  `yaml:"mode,omitempty" json:"mode,omitempty"` // any (default) | all
-	Optional bool    `yaml:"optional" json:"optional"`
-	JWT      *JWT    `yaml:"jwt,omitempty" json:"jwt,omitempty"`
-	APIKey   *APIKey `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
-	MTLS     *MTLS   `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+	Mode          string         `yaml:"mode,omitempty" json:"mode,omitempty"` // any (default) | all
+	Optional      bool           `yaml:"optional" json:"optional"`
+	JWT           *JWT           `yaml:"jwt,omitempty" json:"jwt,omitempty"`
+	Introspection *Introspection `yaml:"introspection,omitempty" json:"introspection,omitempty"`
+	APIKey        *APIKey        `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
+	MTLS          *MTLS          `yaml:"mtls,omitempty" json:"mtls,omitempty"`
+}
+
+// Introspection validates opaque bearer tokens with an RFC 7662 endpoint.
+type Introspection struct {
+	Endpoint     string        `yaml:"endpoint" json:"endpoint"`
+	ClientID     string        `yaml:"clientId" json:"clientId"`
+	ClientSecret string        `yaml:"clientSecret,omitempty" json:"clientSecret,omitempty"`
+	Audiences    []string      `yaml:"audiences,omitempty" json:"audiences,omitempty"`
+	Issuer       string        `yaml:"issuer,omitempty" json:"issuer,omitempty"`
+	CacheTTL     time.Duration `yaml:"cacheTTL" json:"cacheTTL"`
+	// NegativeCacheTTL caches inactive tokens so replayed bad tokens don't
+	// hammer the identity provider.
+	NegativeCacheTTL time.Duration `yaml:"negativeCacheTTL" json:"negativeCacheTTL"`
+	Timeout          time.Duration `yaml:"timeout" json:"timeout"`
 }
 
 type JWT struct {

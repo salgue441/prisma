@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -263,8 +264,16 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 		if !slices.Contains([]string{"", "any", "all"}, a.Mode) {
 			add("%s: authn.mode must be any or all", where)
 		}
-		if a.JWT == nil && a.APIKey == nil && a.MTLS == nil {
-			add("%s: authn requires at least one provider (jwt, apiKey, mtls)", where)
+		if a.JWT == nil && a.Introspection == nil && a.APIKey == nil && a.MTLS == nil {
+			add("%s: authn requires at least one provider (jwt, introspection, apiKey, mtls)", where)
+		}
+		if in := a.Introspection; in != nil {
+			if u, err := url.Parse(in.Endpoint); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				add("%s: authn.introspection.endpoint must be an http(s) URL", where)
+			}
+			if in.ClientID == "" {
+				add("%s: authn.introspection.clientId is required", where)
+			}
 		}
 		if j := a.JWT; j != nil {
 			if (j.JWKSURI == "") == (j.Secret == "") {
