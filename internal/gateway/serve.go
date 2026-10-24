@@ -15,10 +15,16 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
 	"prisma/internal/protocol"
 	"prisma/internal/router"
+	"prisma/internal/telemetry"
 )
 
 var proxyErrorLog = log.New(slogWriter{}, "", 0)
@@ -56,7 +62,12 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 		RequestID:      requestID(r, trustedPeer),
 		RouteName:      "-",
 	}
-	defer g.finish(c, rec, snap)
+	ctx := r.Context()
+	if g.tracing {
+		ctx = telemetry.Propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
+	}
+	ctx, span := g.tracer.Start(ctx, r.Method, trace.WithSpanKind(trace.SpanKindServer))
+	defer func() { g.finish(c, rec, snap, span) }()
 
 	// Identity headers are only ever set by the gateway itself.
 	for k := range r.Header {
@@ -80,6 +91,7 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 	rc := route.Config
 	c.RouteName = rc.Name
 	c.Protocol = protocol.Detect(r, rc.Type)
+	span.SetName(r.Method + " " + rc.Name)
 
 	global := snap.Config.Global
 	if !c.Protocol.IsStreaming() {
@@ -96,7 +108,6 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 		r.Body = http.MaxBytesReader(rec, r.Body, maxBody)
 	}
 
-	ctx := r.Context()
 	timeout := global.RequestTimeout
 	switch {
 	case rc.Timeout != nil:
@@ -114,7 +125,7 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 	route.Handler.ServeHTTP(rec, c.Request)
 }
 
-func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot) {
+func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot, span trace.Span) {
 	status := rec.status
 	if status == 0 {
 		status = http.StatusOK
@@ -130,6 +141,7 @@ func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot) {
 	proto := c.Protocol.String()
 	g.metrics.Requests.WithLabelValues(c.Listener, c.RouteName, proto, strconv.Itoa(status), grpcStatus).Inc()
 	g.metrics.Duration.WithLabelValues(c.RouteName, proto).Observe(elapsed.Seconds())
+	endSpan(span, c, status, grpcStatus)
 
 	if snap.Config.Global.AccessLog.Disabled {
 		return
@@ -151,6 +163,9 @@ func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot) {
 	if grpcStatus != "" {
 		attrs = append(attrs, slog.String("grpc_status", grpcStatus))
 	}
+	if sc := span.SpanContext(); sc.IsValid() {
+		attrs = append(attrs, slog.String("trace_id", sc.TraceID().String()), slog.String("span_id", sc.SpanID().String()))
+	}
 	if c.GraphQL != nil {
 		attrs = append(attrs, slog.String("graphql_operation", c.GraphQL.OperationType+" "+c.GraphQL.OperationName),
 			slog.Int("graphql_cost", c.GraphQL.Cost))
@@ -169,6 +184,53 @@ func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot) {
 		attrs = append(attrs, slog.String("error", c.Error))
 	}
 	g.access.LogAttrs(context.Background(), slog.LevelInfo, "access", attrs...)
+}
+
+// endSpan records OpenTelemetry semantic-convention attributes. Server spans
+// are errors for 5xx (not 4xx, which are the client's fault) and for gRPC
+// codes that indicate a server-side problem.
+func endSpan(span trace.Span, c *pipeline.Context, status int, grpcStatus string) {
+	if !span.IsRecording() {
+		span.End()
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("http.request.method", methodOf(c)),
+		attribute.String("url.path", c.OriginalPath),
+		attribute.String("http.route", c.RouteName),
+		attribute.Int("http.response.status_code", status),
+		attribute.String("client.address", c.Var("client_ip")),
+		attribute.String("prisma.listener", c.Listener),
+		attribute.String("prisma.protocol", c.Protocol.String()),
+		attribute.String("prisma.request_id", c.RequestID),
+	}
+	if c.Protocol.IsGRPC() {
+		svc, method, _ := strings.Cut(strings.TrimPrefix(c.OriginalPath, "/"), "/")
+		attrs = append(attrs, attribute.String("rpc.system", "grpc"), attribute.String("rpc.service", svc),
+			attribute.String("rpc.method", method))
+		if code, err := strconv.Atoi(grpcStatus); err == nil {
+			attrs = append(attrs, attribute.Int("rpc.grpc.status_code", code))
+		}
+	}
+	if c.GraphQL != nil {
+		attrs = append(attrs, attribute.String("graphql.operation.type", c.GraphQL.OperationType),
+			attribute.String("graphql.operation.name", c.GraphQL.OperationName))
+	}
+	if c.Principal != nil {
+		attrs = append(attrs, attribute.String("prisma.consumer", c.Principal.Consumer))
+	}
+	if c.Rejection != "" {
+		attrs = append(attrs, attribute.String("prisma.rejected_by", c.Rejection))
+	}
+	span.SetAttributes(attrs...)
+	switch grpcStatus {
+	case "2", "4", "12", "13", "14", "15":
+		span.SetStatus(codes.Error, "grpc status "+grpcStatus)
+	}
+	if status >= 500 {
+		span.SetStatus(codes.Error, c.Error)
+	}
+	span.End()
 }
 
 func methodOf(c *pipeline.Context) string {

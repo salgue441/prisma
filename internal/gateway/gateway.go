@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
@@ -50,6 +52,8 @@ type Gateway struct {
 	access  *slog.Logger
 	jwks    *authn.Registry
 	local   *ratelimit.LocalStore
+	tracer  trace.Tracer
+	tracing bool
 
 	snap  atomic.Pointer[Snapshot]
 	ready atomic.Bool
@@ -64,7 +68,18 @@ func New(m *telemetry.Metrics, accessLog *slog.Logger) *Gateway {
 	if accessLog == nil {
 		accessLog = slog.New(slog.DiscardHandler)
 	}
-	return &Gateway{metrics: m, access: accessLog, jwks: authn.NewRegistry(), local: ratelimit.NewLocalStore()}
+	return &Gateway{
+		metrics: m, access: accessLog, jwks: authn.NewRegistry(), local: ratelimit.NewLocalStore(),
+		tracer: noop.NewTracerProvider().Tracer(""),
+	}
+}
+
+// SetTracerProvider enables tracing. Call it before serving traffic. Inbound
+// trace context is only trusted (extracted) once tracing is enabled;
+// otherwise trace headers pass through to upstreams untouched.
+func (g *Gateway) SetTracerProvider(tp trace.TracerProvider) {
+	g.tracer = tp.Tracer("prisma")
+	g.tracing = true
 }
 
 func (g *Gateway) Metrics() *telemetry.Metrics { return g.metrics }

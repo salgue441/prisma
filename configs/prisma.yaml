@@ -19,6 +19,12 @@ admin:
 # redis:
 #   address: localhost:6379
 
+# Uncomment to export OpenTelemetry traces (e.g. to Jaeger or an OTel Collector).
+# tracing:
+#   endpoint: localhost:4317
+#   insecure: true
+#   sampleRatio: 1.0
+
 listeners:
   - name: public
     address: ":8080"

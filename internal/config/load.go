@@ -96,6 +96,14 @@ func (c *Config) ApplyDefaults() {
 			c.Redis.Prefix = "prisma:"
 		}
 	}
+	if t := c.Tracing; t != nil {
+		if t.ServiceName == "" {
+			t.ServiceName = "prisma"
+		}
+		if t.SampleRatio == 0 {
+			t.SampleRatio = 1
+		}
+	}
 	for i := range c.Listeners {
 		l := &c.Listeners[i]
 		if len(l.Protocols) == 0 {

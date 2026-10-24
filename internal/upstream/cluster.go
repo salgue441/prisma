@@ -20,6 +20,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"prisma/internal/config"
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
@@ -152,28 +157,34 @@ func (c *Cluster) Close(grace time.Duration) {
 
 func (c *Cluster) BreakerOpen() bool { return c.breaker != nil && c.breaker.Open() }
 
-// pick selects an endpoint, skipping unhealthy, ejected and already-tried ones.
-// When outlier detection has ejected every healthy endpoint, ejections are
-// ignored rather than failing the whole cluster (panic routing).
+// pick selects a healthy endpoint, relaxing constraints in order until one
+// qualifies:
+//  1. not ejected and not yet tried by this request
+//  2. not yet tried, ignoring ejections (panic routing: outlier detection
+//     must never take down the whole cluster)
+//  3. any healthy endpoint, so retries still work when every endpoint was
+//     already tried (e.g. single-endpoint clusters)
+//
+// Endpoints failing active health checks are never picked.
 func (c *Cluster) pick(r *http.Request, tried []*Endpoint) *Endpoint {
 	now := time.Now()
-	avail := make([]*Endpoint, 0, len(c.Endpoints))
-	for _, e := range c.Endpoints {
-		if e.Healthy() && !e.Ejected(now) && !slices.Contains(tried, e) {
-			avail = append(avail, e)
-		}
+	filters := []func(*Endpoint) bool{
+		func(e *Endpoint) bool { return !e.Ejected(now) && !slices.Contains(tried, e) },
+		func(e *Endpoint) bool { return !slices.Contains(tried, e) },
+		func(*Endpoint) bool { return true },
 	}
-	if len(avail) == 0 {
+	avail := make([]*Endpoint, 0, len(c.Endpoints))
+	for _, ok := range filters {
 		for _, e := range c.Endpoints {
-			if e.Healthy() && !slices.Contains(tried, e) {
+			if e.Healthy() && ok(e) {
 				avail = append(avail, e)
 			}
 		}
+		if len(avail) > 0 {
+			return c.balancer.Pick(r, avail)
+		}
 	}
-	if len(avail) == 0 {
-		return nil
-	}
-	return c.balancer.Pick(r, avail)
+	return nil
 }
 
 // RetryPolicy is the compiled form of a route's retries config.
@@ -267,10 +278,22 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 			done = d
 		}
 
-		out := req.WithContext(ctx)
+		// The tracer comes from the server span, so tracing costs nothing
+		// when it is disabled (noop provider).
+		actx, span := trace.SpanFromContext(ctx).TracerProvider().Tracer("prisma").Start(ctx, "upstream "+c.Name,
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(
+				attribute.String("server.address", ep.Address),
+				attribute.String("prisma.cluster", c.Name),
+				attribute.Int("prisma.attempt", attempt+1),
+			))
+		out := req.WithContext(actx)
 		u := *req.URL
 		u.Scheme, u.Host = c.Scheme, ep.Address
 		out.URL = &u
+		if span.SpanContext().IsValid() {
+			telemetry.Propagator.Inject(actx, propagation.HeaderCarrier(out.Header))
+		}
 
 		ep.inflight.Add(1)
 		start := time.Now()
@@ -278,6 +301,7 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		latency := time.Since(start)
 
 		failure, retryable := classify(resp, err, policy)
+		recordAttempt(span, resp, err, failure)
 		if err == nil {
 			ep.observeLatency(latency)
 		}
@@ -299,16 +323,37 @@ func (c *Cluster) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !canRetry {
 			if err != nil {
 				ep.inflight.Add(-1)
+				span.End()
 				return nil, err
 			}
-			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() { ep.inflight.Add(-1) }}
+			// The span covers the whole response stream, not just headers.
+			resp.Body = &trackedBody{ReadCloser: resp.Body, done: func() {
+				ep.inflight.Add(-1)
+				span.End()
+			}}
 			return resp, nil
 		}
 		ep.inflight.Add(-1)
+		span.End()
 		if resp != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 			resp.Body.Close()
 		}
+	}
+}
+
+func recordAttempt(span trace.Span, resp *http.Response, err error, failure bool) {
+	if !span.IsRecording() {
+		return
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return
+	}
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+	if failure {
+		span.SetStatus(codes.Error, resp.Status)
 	}
 }
 
