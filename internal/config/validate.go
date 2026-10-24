@@ -64,6 +64,13 @@ func (c *Config) Validate() error {
 				add("%s: http2 requires tls (use h2c for cleartext HTTP/2)", where)
 			}
 		}
+		if pp := l.ProxyProtocol; pp != nil {
+			for _, cidr := range pp.TrustedCIDRs {
+				if _, err := netip.ParsePrefix(cidr); err != nil {
+					add("%s: proxyProtocol: invalid CIDR %q", where, cidr)
+				}
+			}
+		}
 		if t := l.TLS; t != nil {
 			if len(t.Certificates) == 0 {
 				add("%s: tls requires at least one certificate", where)

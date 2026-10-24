@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"sync/atomic"
 
 	"prisma/internal/config"
+	"prisma/internal/proxyproto"
 )
 
 // Server is one configured listener.
@@ -120,6 +122,14 @@ func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.cfg.Address)
 	if err != nil {
 		return fmt.Errorf("listener %s: %w", s.Name, err)
+	}
+	if pp := s.cfg.ProxyProtocol; pp != nil {
+		// Below TLS: the PROXY header precedes the TLS handshake.
+		pl := &proxyproto.Listener{Listener: ln, Optional: pp.Optional, HeaderTimeout: pp.HeaderTimeout}
+		for _, c := range pp.TrustedCIDRs {
+			pl.Trusted = append(pl.Trusted, netip.MustParsePrefix(c))
+		}
+		ln = pl
 	}
 	s.ln = ln
 	return nil
