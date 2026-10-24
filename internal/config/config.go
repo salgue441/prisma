@@ -120,10 +120,24 @@ type Endpoint struct {
 // "dns" uses A/AAAA records with a fixed port (e.g. Kubernetes headless
 // services); "srv" uses SRV records, which carry ports and weights.
 type Discovery struct {
-	Type     string        `yaml:"type" json:"type"`
-	Host     string        `yaml:"host" json:"host"`
+	Type     string        `yaml:"type" json:"type"` // dns | srv | kubernetes
+	Host     string        `yaml:"host,omitempty" json:"host,omitempty"`
 	Port     int           `yaml:"port,omitempty" json:"port,omitempty"`
 	Interval time.Duration `yaml:"interval" json:"interval"`
+	// Kubernetes watches the EndpointSlices of a Service (type kubernetes).
+	Kubernetes *KubernetesDiscovery `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+}
+
+// KubernetesDiscovery defaults to in-cluster access with the pod's service
+// account; the gateway needs get/list/watch on discovery.k8s.io/endpointslices.
+type KubernetesDiscovery struct {
+	Service   string `yaml:"service" json:"service"`
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	// PortName selects a named Service port; otherwise the only port, or Port.
+	PortName  string `yaml:"portName,omitempty" json:"portName,omitempty"`
+	APIServer string `yaml:"apiServer,omitempty" json:"apiServer,omitempty"`
+	TokenFile string `yaml:"tokenFile,omitempty" json:"tokenFile,omitempty"`
+	CAFile    string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
 }
 
 type UpstreamTLS struct {

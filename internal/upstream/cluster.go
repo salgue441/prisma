@@ -51,6 +51,7 @@ type Cluster struct {
 	breaker   *Breaker
 	metrics   *telemetry.Metrics
 	resolver  Resolver
+	k8s       *k8sWatcher
 
 	active   atomic.Int64
 	retrying atomic.Int64
@@ -85,8 +86,20 @@ func NewCluster(cfg config.Cluster, m *telemetry.Metrics) (*Cluster, error) {
 	c.transport = t
 	if d := cfg.Discovery; d != nil {
 		c.DefaultHost = d.Host
-		if d.Type == "dns" {
+		switch d.Type {
+		case "dns":
 			c.DefaultHost = net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
+		case "kubernetes":
+			w, err := newK8sWatcher(c)
+			if err != nil {
+				return nil, fmt.Errorf("cluster %s: %w", cfg.Name, err)
+			}
+			c.k8s = w
+			// The Service's cluster DNS name, as in-cluster clients would use.
+			c.DefaultHost = d.Kubernetes.Service + "." + w.cfg.Namespace + ".svc"
+			if t.TLSClientConfig.ServerName == "" {
+				t.TLSClientConfig.ServerName = c.DefaultHost
+			}
 		}
 	}
 	c.setEndpoints(cfg.Endpoints)
@@ -225,7 +238,10 @@ func (c *Cluster) Start() {
 	}
 	ctx := c.ctx
 	c.mu.Unlock()
-	if c.Config.Discovery != nil {
+	switch {
+	case c.k8s != nil:
+		go c.k8s.run(ctx)
+	case c.Config.Discovery != nil:
 		c.refresh(ctx)
 		go c.discoveryLoop(ctx)
 	}
