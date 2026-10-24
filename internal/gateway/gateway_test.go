@@ -650,6 +650,23 @@ routes:
 	if !strings.Contains(gotTP, parentTrace) || strings.Contains(gotTP, "00f067aa0ba902b7") {
 		t.Errorf("upstream traceparent %q must carry the trace id with the gateway's client span id", gotTP)
 	}
+
+	// Tracing can be retargeted and turned off while serving (config reload).
+	rec2 := tracetest.NewSpanRecorder()
+	gw.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec2)))
+	get(t, srv.URL+"/x", nil)
+	if len(rec2.Ended()) == 0 || len(rec.Ended()) != len(spans) {
+		t.Errorf("after switching providers: new %d spans, old %d (was %d)", len(rec2.Ended()), len(rec.Ended()), len(spans))
+	}
+	gw.SetTracerProvider(nil)
+	before := len(rec2.Ended())
+	get(t, srv.URL+"/x", map[string]string{"Traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"})
+	if len(rec2.Ended()) != before {
+		t.Error("spans recorded after tracing was disabled")
+	}
+	if got := upstreamTraceparent.Load().(string); !strings.Contains(got, "00f067aa0ba902b7") {
+		t.Errorf("with tracing off, traceparent must pass through untouched, got %q", got)
+	}
 }
 
 // --- gRPC ---

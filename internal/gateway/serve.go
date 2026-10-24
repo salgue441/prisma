@@ -63,10 +63,11 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 		RouteName:      "-",
 	}
 	ctx := r.Context()
-	if g.tracing {
+	tr := g.tracer.Load()
+	if tr.enabled {
 		ctx = telemetry.Propagator.Extract(ctx, propagation.HeaderCarrier(r.Header))
 	}
-	ctx, span := g.tracer.Start(ctx, r.Method, trace.WithSpanKind(trace.SpanKindServer))
+	ctx, span := tr.tracer.Start(ctx, r.Method, trace.WithSpanKind(trace.SpanKindServer))
 	defer func() { g.finish(c, rec, snap, span) }()
 
 	// Identity headers are only ever set by the gateway itself.

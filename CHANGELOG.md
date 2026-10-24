@@ -36,6 +36,11 @@ All notable changes to this project are documented here. The format follows
   apply within moments. Supports tags, datacenters, namespaces and
   partitions, ACL tokens (redacted on the admin API), `allowWarning`, and
   instance weights. Consul outages keep the last known endpoints.
+- **Proxy-Wasm shared queues**: register, resolve, enqueue and dequeue,
+  with `proxy_on_queue_ready` delivered to a root context of the plugin.
+- **Tracing changes apply on reload**: the `tracing` block can be added,
+  changed or removed without a restart; spans of in-flight requests end on
+  the previous exporter, which is flushed afterwards.
 - The demo upstream serves an annotated `shop.v1.Orders` gRPC service on
   `:9004` and can write its descriptor set (`-write-descriptors`).
 - `examples/`: runnable walkthroughs with expected output, from a
