@@ -31,6 +31,11 @@ All notable changes to this project are documented here. The format follows
   errors become HTTP statuses with a problem document. `autoMapping` calls
   unannotated methods as `POST /package.Service/Method`. Other filters,
   masking included, see the JSON side.
+- **Consul service discovery** (`discovery: {type: consul}`): healthy
+  instances of a service, followed with blocking queries so health changes
+  apply within moments. Supports tags, datacenters, namespaces and
+  partitions, ACL tokens (redacted on the admin API), `allowWarning`, and
+  instance weights. Consul outages keep the last known endpoints.
 - The demo upstream serves an annotated `shop.v1.Orders` gRPC service on
   `:9004` and can write its descriptor set (`-write-descriptors`).
 - `examples/`: runnable walkthroughs with expected output, from a

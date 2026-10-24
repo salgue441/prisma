@@ -48,7 +48,7 @@ from a minimal config to the Gateway API on a kind cluster.
 | Caching | Shared in-memory LRU for GET responses; follows Cache-Control, Age and Vary; separate entries per consumer unless shared; stores the final masked and compressed body; purge via the admin API |
 | Traffic mirroring | Sampled, fire-and-forget copies to a shadow cluster with a concurrency cap; never affects the client |
 | Load balancing | round_robin, weighted_round_robin (smooth), least_conn, p2c_ewma, ring_hash (IP, header or cookie) |
-| Service discovery | Static endpoints, DNS A/AAAA, DNS SRV, and Kubernetes EndpointSlices (watched, so readiness and terminating state apply immediately); endpoints that stay keep their health and latency state |
+| Service discovery | Static endpoints, DNS A/AAAA, DNS SRV, Kubernetes EndpointSlices (watched, so readiness and terminating state apply immediately), and Consul (blocking queries on service health, with tags, datacenters, tokens and weights); endpoints that stay keep their health and latency state |
 | Resilience | Active health checks (HTTP, gRPC, TCP), outlier ejection with backoff and a max-ejection cap, circuit breaker with half-open probing and concurrency cap, retries with backoff and a retry budget, timeouts |
 | Operations | Hot reload (file watch, SIGHUP, `POST /config/reload`), including listeners (swapped on the same socket while in-flight requests drain); invalid configs are rejected while the current one keeps serving. Prometheus metrics, JSON access logs with trace IDs, request IDs (UUIDv7), graceful drain, PROXY protocol v1/v2 from trusted load balancers |
 | Tracing | OpenTelemetry: a server span per request and a client span per upstream attempt (so retries are visible), W3C trace context propagation, OTLP/gRPC export, sampling that follows the caller's decision |
@@ -182,5 +182,4 @@ a kind cluster.
   matches. Tested on kind, but the upstream conformance suite has not been
   run yet.
 - Proxy-Wasm: shared queues, gRPC callouts, and callouts from root contexts.
-- Consul discovery.
 - Applying tracing changes without a restart.

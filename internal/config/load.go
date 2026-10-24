@@ -268,6 +268,11 @@ func (c *Config) Redacted() *Config {
 	if cp.Redis != nil && cp.Redis.Password != "" {
 		cp.Redis.Password = r
 	}
+	for i := range cp.Clusters {
+		if d := cp.Clusters[i].Discovery; d != nil && d.Consul != nil && d.Consul.Token != "" {
+			d.Consul.Token = r
+		}
+	}
 	for i := range cp.Listeners {
 		if t := cp.Listeners[i].TLS; t != nil {
 			for j := range t.Certificates {
