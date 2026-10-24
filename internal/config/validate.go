@@ -322,6 +322,26 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 			add("%s: cost must be empty or graphql", w)
 		}
 	}
+	if g := p.GraphQL; g != nil {
+		if g.Schema != "" && g.SchemaFile != "" {
+			add("%s: graphql: schema and schemaFile are mutually exclusive", where)
+		}
+		if len(g.FieldAuthz) > 0 && g.Schema == "" && g.SchemaFile == "" {
+			add("%s: graphql.fieldAuthz requires schema or schemaFile", where)
+		}
+		for i, fa := range g.FieldAuthz {
+			typ, field, ok := strings.Cut(fa.Coordinate, ".")
+			if !ok || typ == "" || field == "" {
+				add("%s: graphql.fieldAuthz[%d]: coordinate must look like Type.field or Type.*", where, i)
+			}
+			if !slices.Contains([]string{"", "reject", "strip"}, fa.OnDeny) {
+				add("%s: graphql.fieldAuthz[%d]: onDeny must be reject or strip", where, i)
+			}
+			if len(fa.Scopes) == 0 {
+				add("%s: graphql.fieldAuthz[%d]: scopes are required", where, i)
+			}
+		}
+	}
 	if ea := p.ExtAuthz; ea != nil {
 		if u, err := url.Parse(ea.URL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			add("%s: extAuthz.url must be an http(s) URL", where)

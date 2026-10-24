@@ -84,7 +84,11 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		if maxBody == 0 {
 			maxBody = int64(cfg.Global.MaxBodyBytes)
 		}
-		ch.Request = append(ch.Request, graphqlguard.New(pol.GraphQL, maxBody))
+		f, err := graphqlguard.New(pol.GraphQL, maxBody)
+		if err != nil {
+			return nil, err
+		}
+		ch.Request = append(ch.Request, f)
 	}
 	if len(pol.RateLimit) > 0 {
 		ch.Request = append(ch.Request, ratelimit.New(rc.Name, pol.RateLimit, d.gw.local, d.redis, m))
