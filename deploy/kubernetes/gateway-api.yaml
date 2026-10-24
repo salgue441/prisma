@@ -42,7 +42,7 @@ spec:
               type: object
               description: >-
                 Prisma policy fields (authn, authz, extAuthz, rateLimit, masking,
-                graphql, cors, compression, cache, headers, plugins) with the
+                graphql, openapi, cors, compression, cache, headers, plugins) with the
                 same schema as the gateway's YAML configuration, attached to
                 Gateways, HTTPRoutes or GRPCRoutes in the same namespace.
                 Route policies override Gateway policies.

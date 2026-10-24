@@ -17,6 +17,12 @@ All notable changes to this project are documented here. The format follows
   `prisma_tcp_active_connections`, `prisma_tcp_bytes_total`.
 - **Gateway API TLSRoute and TCPRoute** (v1alpha2, experimental channel):
   TLS listeners in Passthrough or Terminate mode and TCP listeners.
+- **OpenAPI request validation** (`openapi` on routes and policies): requests
+  are checked against an OpenAPI 3 document and rejected with a 400 listing
+  each problem (`in`, `field`, `message`), or 404/405 for undefined
+  operations. `mode: report` only logs and counts; `responses: report`
+  validates upstream JSON responses without blocking them. Gateway errors can
+  now carry an `errors` member in their problem document.
 - `examples/`: runnable walkthroughs with expected output, from a
   minimal config to the Gateway API on kind. `go test ./examples/` checks
   that every example config loads and compiles.

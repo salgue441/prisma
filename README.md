@@ -39,6 +39,7 @@ from a minimal config to the Gateway API on a kind cluster.
 | Authorization | Required scopes per route, per HTTP method and per gRPC method; consumer allow-lists; IP allow/deny CIDRs; external authorization service (Envoy-compatible HTTP ext_authz, fail-open or fail-closed) |
 | Rate limiting | GCRA, local or Redis (one atomic Lua script); keys from IP, consumer, route, header, JWT claim, gRPC method or GraphQL operation; GraphQL cost-based limits; IETF `RateLimit-*` headers; falls back to local limits if Redis fails |
 | GraphQL guard | Limits on depth, aliases, root fields, cost and batch size; introspection blocking; persisted-query aware; validation against a schema; field-level authorization by `Type.field` (reject or strip the field) |
+| OpenAPI validation | Requests checked against an OpenAPI 3 document (path, method, parameters, headers, cookies, JSON bodies) and rejected with field-level errors; report-only mode for rollout; optional reporting of upstream responses that break the contract |
 | Masking | JSONPath-style selectors (`$..ssn`, `$.a[*].b`) and detectors (email, SSN, Luhn-checked cards); redact, partial, HMAC hash or drop; `unlessScope` bypass; fails closed by default; gRPC messages are masked too, frame by frame, using a descriptor set |
 | Redirects / rewrites | 301/302/303/307/308, HTTPS upgrade, prefix replacement, prefix stripping, regex path rewrite, host rewrite |
 | Browser support | CORS preflights answered at the gateway before auth, exact or wildcard-subdomain origins, CORS headers on gateway errors too |

@@ -31,6 +31,7 @@ The gateway listens on `:8080` and its admin API on `127.0.0.1:9901`.
 | [13-observability](13-observability) | Tracing with Jaeger, metrics with Prometheus, in Docker Compose |
 | [14-kubernetes](14-kubernetes) | Gateway API controller and PrismaPolicy on a kind cluster |
 | [15-tcp-tls](15-tcp-tls) | TCP proxying, TLS passthrough by SNI, TLS termination |
+| [16-openapi](16-openapi) | Validating requests (and responses) against an OpenAPI document |
 
 [tools/](tools) has helpers used by the examples: `token` mints test JWTs and
 `hmac-sign` sends HMAC-signed requests.
