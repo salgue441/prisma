@@ -76,7 +76,7 @@ type Plugin struct {
 	FailOpen bool `yaml:"failOpen" json:"failOpen"`
 }
 
-// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
+// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes apply on reload.
 type Tracing struct {
 	Endpoint    string            `yaml:"endpoint" json:"endpoint"` // host:port of an OTLP/gRPC collector
 	Insecure    bool              `yaml:"insecure" json:"insecure"`
