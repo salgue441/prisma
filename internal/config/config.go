@@ -140,6 +140,18 @@ type Policy struct {
 	Masking   *Masking    `yaml:"masking,omitempty" json:"masking,omitempty"`
 	Headers   *Headers    `yaml:"headers,omitempty" json:"headers,omitempty"`
 	GraphQL   *GraphQL    `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	CORS      *CORS       `yaml:"cors,omitempty" json:"cors,omitempty"`
+}
+
+type CORS struct {
+	// AllowOrigins entries are exact origins, "*", or wildcard subdomains
+	// such as "https://*.example.com".
+	AllowOrigins     []string      `yaml:"allowOrigins" json:"allowOrigins"`
+	AllowMethods     []string      `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
+	AllowHeaders     []string      `yaml:"allowHeaders,omitempty" json:"allowHeaders,omitempty"`
+	ExposeHeaders    []string      `yaml:"exposeHeaders,omitempty" json:"exposeHeaders,omitempty"`
+	AllowCredentials bool          `yaml:"allowCredentials" json:"allowCredentials"`
+	MaxAge           time.Duration `yaml:"maxAge" json:"maxAge"`
 }
 
 type AuthN struct {
