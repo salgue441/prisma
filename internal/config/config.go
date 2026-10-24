@@ -267,9 +267,11 @@ type Route struct {
 
 	Policy `yaml:",inline" json:",inline"`
 
-	Redirect     *Redirect      `yaml:"redirect,omitempty" json:"redirect,omitempty"`
-	Rewrite      *Rewrite       `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
-	Retries      *Retries       `yaml:"retries,omitempty" json:"retries,omitempty"`
+	Redirect *Redirect `yaml:"redirect,omitempty" json:"redirect,omitempty"`
+	Rewrite  *Rewrite  `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
+	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
+	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
+	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
 	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
