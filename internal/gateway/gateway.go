@@ -18,6 +18,7 @@ import (
 
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
+	"prisma/internal/filters/cache"
 	"prisma/internal/filters/ratelimit"
 	"prisma/internal/router"
 	"prisma/internal/telemetry"
@@ -52,6 +53,7 @@ type Gateway struct {
 	access  *slog.Logger
 	jwks    *authn.Registry
 	local   *ratelimit.LocalStore
+	cache   *cache.Store
 	tracer  trace.Tracer
 	tracing bool
 
@@ -70,6 +72,7 @@ func New(m *telemetry.Metrics, accessLog *slog.Logger) *Gateway {
 	}
 	return &Gateway{
 		metrics: m, access: accessLog, jwks: authn.NewRegistry(), local: ratelimit.NewLocalStore(),
+		cache:  cache.NewStore(64 << 20),
 		tracer: noop.NewTracerProvider().Tracer(""),
 	}
 }
@@ -83,6 +86,7 @@ func (g *Gateway) SetTracerProvider(tp trace.TracerProvider) {
 }
 
 func (g *Gateway) Metrics() *telemetry.Metrics { return g.metrics }
+func (g *Gateway) Cache() *cache.Store         { return g.cache }
 func (g *Gateway) Snapshot() *Snapshot         { return g.snap.Load() }
 func (g *Gateway) Ready() bool                 { return g.ready.Load() && g.snap.Load() != nil }
 func (g *Gateway) SetReady(v bool)             { g.ready.Store(v) }
@@ -119,6 +123,7 @@ func (g *Gateway) Apply(cfg *config.Config, version string) error {
 	for _, c := range created {
 		c.Start()
 	}
+	g.cache.SetMax(int64(cfg.Global.CacheMaxBytes))
 	g.snap.Store(snap)
 	g.ready.Store(true)
 
@@ -130,6 +135,7 @@ func (g *Gateway) Apply(cfg *config.Config, version string) error {
 		g.redis, g.redisCfg = redisClient, cfg.Redis
 	}
 	if prev != nil {
+		purgeChangedRoutes(g.cache, prev.Config, cfg)
 		g.metrics.ConfigInfo.DeleteLabelValues(prev.Version)
 		for name, c := range prev.Clusters {
 			if snap.Clusters[name] != c {
@@ -199,6 +205,23 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 	}
 	snap.Router = router.New(routes)
 	return snap, created, nil
+}
+
+// purgeChangedRoutes drops cached responses of routes that were removed or
+// whose effective configuration changed: entries produced under old rules
+// (masking, rewrites, upstreams) must not outlive them.
+func purgeChangedRoutes(store *cache.Store, prev, next *config.Config) {
+	nextByName := map[string]*config.Route{}
+	for i := range next.Routes {
+		nextByName[next.Routes[i].Name] = &next.Routes[i]
+	}
+	for i := range prev.Routes {
+		old := &prev.Routes[i]
+		nr, ok := nextByName[old.Name]
+		if !ok || !reflect.DeepEqual(old, nr) || !reflect.DeepEqual(prev.EffectivePolicy(old), next.EffectivePolicy(nr)) {
+			store.Purge(cache.RoutePrefix(old.Name))
+		}
+	}
 }
 
 // Close stops background work owned by the current snapshot.

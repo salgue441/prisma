@@ -27,7 +27,9 @@ type Global struct {
 	TrustedProxies []string      `yaml:"trustedProxies,omitempty" json:"trustedProxies,omitempty"`
 	ShutdownDelay  time.Duration `yaml:"shutdownDelay" json:"shutdownDelay"`
 	DrainTimeout   time.Duration `yaml:"drainTimeout" json:"drainTimeout"`
-	AccessLog      AccessLog     `yaml:"accessLog" json:"accessLog"`
+	// CacheMaxBytes bounds the shared response cache (default 64MiB).
+	CacheMaxBytes ByteSize  `yaml:"cacheMaxBytes" json:"cacheMaxBytes"`
+	AccessLog     AccessLog `yaml:"accessLog" json:"accessLog"`
 	// Use lists policies applied to every route before the route's own policies.
 	Use []string `yaml:"use,omitempty" json:"use,omitempty"`
 }
@@ -164,6 +166,21 @@ type Policy struct {
 	ExtAuthz    *ExtAuthz    `yaml:"extAuthz,omitempty" json:"extAuthz,omitempty"`
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
+	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+}
+
+// Cache stores GET responses in the gateway's shared in-memory cache,
+// honoring Cache-Control (s-maxage, max-age, no-store, private) and Vary.
+type Cache struct {
+	// DefaultTTL applies when the upstream sends no freshness information.
+	// Zero means such responses are not cached.
+	DefaultTTL    time.Duration `yaml:"defaultTTL" json:"defaultTTL"`
+	MaxEntryBytes ByteSize      `yaml:"maxEntryBytes" json:"maxEntryBytes"`
+	// Shared lets different consumers share entries. Leave false whenever
+	// responses may differ per caller (masking unlessScope, per-user data).
+	Shared bool `yaml:"shared" json:"shared"`
+	// KeyHeaders adds request headers to the cache key.
+	KeyHeaders []string `yaml:"keyHeaders,omitempty" json:"keyHeaders,omitempty"`
 }
 
 type Compression struct {

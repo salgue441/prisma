@@ -21,6 +21,7 @@ type Metrics struct {
 	MaskingFailures  *prometheus.CounterVec
 	ExtAuthz         *prometheus.CounterVec
 	Mirror           *prometheus.CounterVec
+	Cache            *prometheus.CounterVec
 	EndpointHealthy  *prometheus.GaugeVec
 	CircuitOpen      *prometheus.GaugeVec
 	ConfigReloads    *prometheus.CounterVec
@@ -63,6 +64,9 @@ func NewMetrics() *Metrics {
 		Mirror: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "prisma_mirror_requests_total", Help: "Shadow requests by result (sent, error, dropped, skipped).",
 		}, []string{"route", "result"}),
+		Cache: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "prisma_cache_requests_total", Help: "Response cache lookups and stores (hit, miss, bypass, stored).",
+		}, []string{"route", "result"}),
 		EndpointHealthy: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "prisma_endpoint_healthy", Help: "1 if the endpoint passes active health checks.",
 		}, []string{"cluster", "endpoint"}),
@@ -77,7 +81,7 @@ func NewMetrics() *Metrics {
 		}, []string{"version"}),
 	}
 	reg.MustRegister(m.Requests, m.Duration, m.UpstreamRequests, m.UpstreamDuration, m.Retries,
-		m.RateLimit, m.AuthFailures, m.MaskingFailures, m.ExtAuthz, m.Mirror, m.EndpointHealthy, m.CircuitOpen,
+		m.RateLimit, m.AuthFailures, m.MaskingFailures, m.ExtAuthz, m.Mirror, m.Cache, m.EndpointHealthy, m.CircuitOpen,
 		m.ConfigReloads, m.ConfigInfo)
 	return m
 }

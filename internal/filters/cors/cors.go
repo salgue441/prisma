@@ -128,3 +128,5 @@ type preflightResponse struct{}
 func (preflightResponse) Respond(w http.ResponseWriter, _ protocol.Kind) {
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (preflightResponse) ServedByGateway() {}

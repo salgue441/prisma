@@ -85,6 +85,9 @@ func (c *Config) ApplyDefaults() {
 	if g.DrainTimeout == 0 {
 		g.DrainTimeout = 30 * time.Second
 	}
+	if g.CacheMaxBytes == 0 {
+		g.CacheMaxBytes = 64 << 20
+	}
 	if c.Admin.Address == "" {
 		c.Admin.Address = "127.0.0.1:9901"
 	}
