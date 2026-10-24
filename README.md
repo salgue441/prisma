@@ -42,11 +42,13 @@ Validate a config without starting the gateway: `go run ./cmd/prisma -config pat
 | Caching | Shared in-memory LRU for GET responses; follows Cache-Control, Age and Vary; separate entries per consumer unless shared; stores the final masked and compressed body; purge via the admin API |
 | Traffic mirroring | Sampled, fire-and-forget copies to a shadow cluster with a concurrency cap; never affects the client |
 | Load balancing | round_robin, weighted_round_robin (smooth), least_conn, p2c_ewma, ring_hash (IP, header or cookie) |
-| Service discovery | Static endpoints, DNS A/AAAA (e.g. Kubernetes headless services), DNS SRV; refreshed periodically; endpoints that stay keep their health and latency state |
+| Service discovery | Static endpoints, DNS A/AAAA, DNS SRV, and Kubernetes EndpointSlices (watched, so readiness and terminating state apply immediately); endpoints that stay keep their health and latency state |
 | Resilience | Active health checks (HTTP, gRPC, TCP), outlier ejection with backoff and a max-ejection cap, circuit breaker with half-open probing and concurrency cap, retries with backoff and a retry budget, timeouts |
 | Operations | Hot reload (file watch, SIGHUP, `POST /config/reload`), including listeners (swapped on the same socket while in-flight requests drain); invalid configs are rejected while the current one keeps serving. Prometheus metrics, JSON access logs with trace IDs, request IDs (UUIDv7), graceful drain, PROXY protocol v1/v2 from trusted load balancers |
 | Tracing | OpenTelemetry: a server span per request and a client span per upstream attempt (so retries are visible), W3C trace context propagation, OTLP/gRPC export, sampling that follows the caller's decision |
 | Errors | One error model rendered as RFC 9457 problem+json for HTTP, the GraphQL error envelope for GraphQL, and Trailers-Only `grpc-status` for gRPC |
+| Plugins | Proxy-Wasm (ABI 0.2.x, the Envoy/Istio standard) on wazero: plugins built with the official Go, Rust or C++ SDKs run unmodified. Supports headers, bodies, local responses, HTTP callouts through gateway clusters, properties, shared data, metrics and timers. A crashing or looping plugin fails only its own request |
+| Kubernetes | Gateway API controller (Gateway, HTTPRoute, GRPCRoute, ReferenceGrant) with status reporting, plus a `PrismaPolicy` CRD that attaches any Prisma feature to Gateways or Routes |
 
 ## Admin API (`admin.address`, optionally `admin.token`)
 
@@ -108,7 +110,68 @@ SHA-256 of the body. Each header listed in `signedHeaders` adds one more
 line, `name:value`. Each signature is accepted only once. Go clients can
 call `authn.Sign`, which is exactly what the gateway verifies against.
 
+## Proxy-Wasm plugins
+
+Any Proxy-Wasm plugin works. With the official Go SDK
+(`github.com/proxy-wasm/proxy-wasm-go-sdk`), build it as a WASI reactor:
+
+```sh
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o plugin.wasm .
+```
+
+```yaml
+plugins:
+  - name: tenant
+    file: plugins/tenant.wasm
+    config: {header: X-Tenant}   # handed to the plugin as JSON (strings as-is)
+    bodies: false                # true: buffer bodies and run the body callbacks
+    failOpen: false              # true: let requests through if the plugin fails
+routes:
+  - name: orders
+    plugins: [tenant]            # can also be set in policies and global.use
+```
+
+`proxy_http_call` targets a gateway cluster by name. Plugins can read
+Envoy-style properties (`request.*`, `source.*`, `route_name`) and the
+authenticated identity (`prisma.consumer`, `prisma.principal`,
+`prisma.scopes`). The `internal/wasm/testdata/plugin` directory has a
+complete example built with the SDK.
+
+## Kubernetes
+
+There are two ways to run Prisma on Kubernetes:
+
+- **ConfigMap mode** (`deploy/kubernetes/prisma.yaml`). Routes stay in the
+  YAML config, and clusters use `discovery: {type: kubernetes}` to follow a
+  Service's EndpointSlices.
+- **Gateway API mode** (`deploy/kubernetes/gateway-api.yaml`). Set
+  `gatewayAPI: {controllerName: prisma.dev/gateway-controller}`. Gateways with
+  `gatewayClassName: prisma`, plus HTTPRoutes and GRPCRoutes, become listeners
+  and routes, and Prisma writes their status back. The file config still
+  supplies the base settings: admin, consumers, plugins, Redis.
+
+Prisma-specific features attach to Gateways or Routes through `PrismaPolicy`.
+Its `spec` uses the same fields as a policy in the YAML config:
+
+```yaml
+apiVersion: prisma.dev/v1alpha1
+kind: PrismaPolicy
+metadata: {name: orders, namespace: shop}
+spec:
+  targetRefs: [{group: gateway.networking.k8s.io, kind: HTTPRoute, name: orders}]
+  authn: {jwt: {jwksUri: "https://idp.example.com/.well-known/jwks.json", issuer: "https://idp.example.com/"}}
+  rateLimit: [{key: [consumer], limit: 100, period: 1s}]
+  masking: {rules: [{selector: "$..ssn", strategy: redact}]}
+```
+
+Policies that target a Route override policies that target its Gateway.
+Invalid policies are rejected individually and reported in their status.
+
 ## Not yet implemented
 
-WASM plugins, Kubernetes CRD configuration and EndpointSlice/Consul
-discovery, and applying tracing changes without a restart.
+- Gateway API: TLSRoute, TCPRoute, TLS passthrough, `allowedRoutes`
+  namespace selectors, and regex header matches. The upstream conformance
+  suite has not been run yet.
+- Proxy-Wasm: shared queues, gRPC callouts, and callouts from root contexts.
+- Consul discovery.
+- Applying tracing changes without a restart.

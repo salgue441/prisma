@@ -88,7 +88,7 @@ spec:
             matchLabels: {app: prisma}
       containers:
         - name: prisma
-          image: prisma:v0.3.0
+          image: prisma:v0.4.0
           args: ["-config", "/etc/prisma/prisma.yaml"]
           ports:
             - {name: http, containerPort: 8080}
