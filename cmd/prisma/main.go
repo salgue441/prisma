@@ -21,6 +21,7 @@ import (
 	"prisma/internal/admin"
 	"prisma/internal/config"
 	"prisma/internal/gateway"
+	"prisma/internal/gatewayapi"
 	"prisma/internal/telemetry"
 )
 
@@ -85,6 +86,22 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		return err
 	}
 
+	// applyAll installs routes first, then listeners: a new listener only
+	// starts once the routes that reference it exist.
+	applyAll := func(c *config.Config, v string) error {
+		if err := gw.Apply(c, v); err != nil {
+			return err
+		}
+		return listeners.Apply(c.Listeners)
+	}
+	var controller *gatewayapi.Controller
+	if cfg.GatewayAPI != nil {
+		var err error
+		if controller, err = gatewayapi.NewController(*cfg.GatewayAPI, cfg, applyAll); err != nil {
+			return fmt.Errorf("gateway API controller: %w", err)
+		}
+	}
+
 	var mu sync.Mutex
 	current := cfgVersion
 	reload := func() error {
@@ -102,16 +119,16 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		if !reflect.DeepEqual(next.Tracing, gw.Snapshot().Config.Tracing) {
 			slog.Warn("tracing changes require a restart")
 		}
-		if err := gw.Apply(next, v); err != nil {
+		if controller != nil {
+			// The controller merges the new base with cluster resources.
+			controller.SetBase(next)
+			metrics.ConfigReloads.WithLabelValues("success").Inc()
+			current = v
+			return nil
+		}
+		if err := applyAll(next, v); err != nil {
 			metrics.ConfigReloads.WithLabelValues("failed").Inc()
 			slog.Error("config reload failed; keeping current config", "version", current, "err", err)
-			return err
-		}
-		// Routes first, then listeners: a new listener only starts once the
-		// routes that reference it exist. Unchanged listeners reload certs.
-		if err := listeners.Apply(next.Listeners); err != nil {
-			metrics.ConfigReloads.WithLabelValues("failed").Inc()
-			slog.Error("listener changes not applied; previous listeners keep serving", "err", err)
 			return err
 		}
 		metrics.ConfigReloads.WithLabelValues("success").Inc()
@@ -137,6 +154,9 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 	defer stop()
 	if watch {
 		go watchFile(ctx, path, func() { _ = reload() })
+	}
+	if controller != nil {
+		go controller.Run(ctx)
 	}
 
 	sigs := make(chan os.Signal, 1)

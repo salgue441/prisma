@@ -91,6 +91,9 @@ func (c *Config) ApplyDefaults() {
 	if c.Admin.Address == "" {
 		c.Admin.Address = "127.0.0.1:9901"
 	}
+	if c.GatewayAPI != nil && c.GatewayAPI.ControllerName == "" {
+		c.GatewayAPI.ControllerName = "prisma.dev/gateway-controller"
+	}
 	if c.Redis != nil {
 		if c.Redis.Timeout == 0 {
 			c.Redis.Timeout = 50 * time.Millisecond
@@ -258,6 +261,15 @@ func (c *Config) Redacted() *Config {
 	}
 	if cp.Redis != nil && cp.Redis.Password != "" {
 		cp.Redis.Password = r
+	}
+	for i := range cp.Listeners {
+		if t := cp.Listeners[i].TLS; t != nil {
+			for j := range t.Certificates {
+				if t.Certificates[j].KeyPEM != "" {
+					t.Certificates[j].KeyPEM = r
+				}
+			}
+		}
 	}
 	for i := range cp.Consumers {
 		for j := range cp.Consumers[i].APIKeys {

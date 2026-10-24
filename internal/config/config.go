@@ -9,11 +9,15 @@ import (
 const APIVersion = "prisma/v1"
 
 type Config struct {
-	APIVersion string            `yaml:"apiVersion" json:"apiVersion"`
-	Global     Global            `yaml:"global" json:"global"`
-	Admin      Admin             `yaml:"admin" json:"admin"`
-	Redis      *Redis            `yaml:"redis,omitempty" json:"redis,omitempty"`
-	Tracing    *Tracing          `yaml:"tracing,omitempty" json:"tracing,omitempty"`
+	APIVersion string   `yaml:"apiVersion" json:"apiVersion"`
+	Global     Global   `yaml:"global" json:"global"`
+	Admin      Admin    `yaml:"admin" json:"admin"`
+	Redis      *Redis   `yaml:"redis,omitempty" json:"redis,omitempty"`
+	Tracing    *Tracing `yaml:"tracing,omitempty" json:"tracing,omitempty"`
+	// GatewayAPI turns on the Kubernetes Gateway API controller: Gateways,
+	// HTTPRoutes, GRPCRoutes and PrismaPolicies are translated into listeners,
+	// routes and policies merged with this file.
+	GatewayAPI *GatewayAPI       `yaml:"gatewayAPI,omitempty" json:"gatewayAPI,omitempty"`
 	Listeners  []Listener        `yaml:"listeners" json:"listeners"`
 	Clusters   []Cluster         `yaml:"clusters" json:"clusters"`
 	Policies   map[string]Policy `yaml:"policies,omitempty" json:"policies,omitempty"`
@@ -112,8 +116,25 @@ type ListenerTLS struct {
 }
 
 type Certificate struct {
-	CertFile string `yaml:"certFile" json:"certFile"`
-	KeyFile  string `yaml:"keyFile" json:"keyFile"`
+	CertFile string `yaml:"certFile,omitempty" json:"certFile,omitempty"`
+	KeyFile  string `yaml:"keyFile,omitempty" json:"keyFile,omitempty"`
+	// CertPEM and KeyPEM carry the pair inline (used for Kubernetes Secrets).
+	CertPEM string `yaml:"certPEM,omitempty" json:"certPEM,omitempty"`
+	KeyPEM  string `yaml:"keyPEM,omitempty" json:"keyPEM,omitempty"`
+}
+
+type GatewayAPI struct {
+	// ControllerName selects the GatewayClasses this gateway implements.
+	ControllerName string `yaml:"controllerName" json:"controllerName"`
+	APIServer      string `yaml:"apiServer,omitempty" json:"apiServer,omitempty"`
+	TokenFile      string `yaml:"tokenFile,omitempty" json:"tokenFile,omitempty"`
+	CAFile         string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
+}
+
+type DirectResponse struct {
+	Status      int    `yaml:"status" json:"status"`
+	Body        string `yaml:"body,omitempty" json:"body,omitempty"`
+	ContentType string `yaml:"contentType,omitempty" json:"contentType,omitempty"`
 }
 
 type Cluster struct {
@@ -420,8 +441,10 @@ type Route struct {
 	Policy `yaml:",inline" json:",inline"`
 
 	Redirect *Redirect `yaml:"redirect,omitempty" json:"redirect,omitempty"`
-	Rewrite  *Rewrite  `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
-	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
+	// DirectResponse answers at the gateway with a fixed status and body.
+	DirectResponse *DirectResponse `yaml:"directResponse,omitempty" json:"directResponse,omitempty"`
+	Rewrite        *Rewrite        `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
+	Retries        *Retries        `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
 	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
 	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
@@ -439,6 +462,8 @@ type Match struct {
 	Headers     map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	GRPCService string            `yaml:"grpcService,omitempty" json:"grpcService,omitempty"`
 	GRPCMethod  string            `yaml:"grpcMethod,omitempty" json:"grpcMethod,omitempty"`
+	// QueryParams match exact query parameter values.
+	QueryParams map[string]string `yaml:"queryParams,omitempty" json:"queryParams,omitempty"`
 }
 
 type Redirect struct {

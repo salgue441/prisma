@@ -1,0 +1,234 @@
+# Prisma as a Gateway API implementation.
+#
+# 1. Install the Gateway API CRDs (standard channel):
+#      kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
+#    For GRPCRoute on older releases use the experimental channel.
+# 2. kubectl apply -f deploy/kubernetes/gateway-api.yaml
+# 3. Create Gateways with gatewayClassName: prisma, attach HTTPRoutes and
+#    GRPCRoutes, and attach Prisma features with PrismaPolicy.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: prismapolicies.prisma.dev
+spec:
+  group: prisma.dev
+  scope: Namespaced
+  names:
+    kind: PrismaPolicy
+    listKind: PrismaPolicyList
+    plural: prismapolicies
+    singular: prismapolicy
+    shortNames: [ppol]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - {name: Target, type: string, jsonPath: ".spec.targetRefs[0].name"}
+        - {name: Accepted, type: string, jsonPath: ".status.ancestors[0].conditions[?(@.type==\"Accepted\")].status"}
+        - {name: Age, type: date, jsonPath: .metadata.creationTimestamp}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              description: >-
+                Prisma policy fields (authn, authz, extAuthz, rateLimit, masking,
+                graphql, cors, compression, cache, headers, plugins) with the
+                same schema as the gateway's YAML configuration, attached to
+                Gateways, HTTPRoutes or GRPCRoutes in the same namespace.
+                Route policies override Gateway policies.
+              required: [targetRefs]
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                targetRefs:
+                  type: array
+                  minItems: 1
+                  maxItems: 16
+                  items:
+                    type: object
+                    required: [group, kind, name]
+                    properties:
+                      group: {type: string, enum: [gateway.networking.k8s.io]}
+                      kind: {type: string, enum: [Gateway, HTTPRoute, GRPCRoute]}
+                      name: {type: string, minLength: 1, maxLength: 253}
+                      sectionName: {type: string}
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: prisma
+spec:
+  controllerName: prisma.dev/gateway-controller
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prisma
+  namespace: gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prisma-gateway-controller
+rules:
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gatewayclasses, gateways, httproutes, grpcroutes, referencegrants]
+    verbs: [get, list, watch]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [gatewayclasses/status, gateways/status, httproutes/status, grpcroutes/status]
+    verbs: [patch, update]
+  - apiGroups: [prisma.dev]
+    resources: [prismapolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [prisma.dev]
+    resources: [prismapolicies/status]
+    verbs: [patch, update]
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get, list, watch]
+  # Only kubernetes.io/tls secrets are listed (field selector), but RBAC
+  # cannot express that; scope with namespaced Roles if this is too broad.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prisma-gateway-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prisma-gateway-controller
+subjects:
+  - kind: ServiceAccount
+    name: prisma
+    namespace: gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prisma-config
+  namespace: gateway
+data:
+  # Static base: everything else comes from Gateway API resources.
+  prisma.yaml: |
+    apiVersion: prisma/v1
+    global:
+      shutdownDelay: 5s
+      drainTimeout: 25s
+    admin:
+      address: 0.0.0.0:9901
+    gatewayAPI:
+      controllerName: prisma.dev/gateway-controller
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prisma
+  namespace: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: prisma}
+  template:
+    metadata:
+      labels: {app: prisma}
+    spec:
+      serviceAccountName: prisma
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: prisma
+          image: prisma:v0.4.0
+          args: ["-config", "/etc/prisma/prisma.yaml"]
+          ports:
+            - {name: http, containerPort: 80}
+            - {name: https, containerPort: 443}
+            - {name: admin, containerPort: 9901}
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [NET_BIND_SERVICE]   # Gateway listeners on ports 80/443
+          volumeMounts:
+            - {name: config, mountPath: /etc/prisma}
+      volumes:
+        - name: config
+          configMap: {name: prisma-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prisma
+  namespace: gateway
+spec:
+  type: LoadBalancer
+  selector: {app: prisma}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+    - {name: https, port: 443, targetPort: https}
+---
+# Example: a Gateway, a route, and Prisma features attached with a policy.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public
+  namespace: gateway
+spec:
+  gatewayClassName: prisma
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces: {from: All}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: echo
+  namespace: gateway
+spec:
+  parentRefs: [{name: public}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /echo}}]
+      filters:
+        - type: URLRewrite
+          urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}
+      backendRefs: [{name: echo, port: 80}]
+---
+apiVersion: prisma.dev/v1alpha1
+kind: PrismaPolicy
+metadata:
+  name: echo-protection
+  namespace: gateway
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: echo}
+  rateLimit:
+    - {key: [client_ip], limit: 20, period: 1s, burst: 40}
+  cors:
+    allowOrigins: ["https://app.example.com"]
+  compression: {}
