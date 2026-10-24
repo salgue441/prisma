@@ -53,7 +53,7 @@ from a minimal config to the Gateway API on a kind cluster.
 | Operations | Hot reload (file watch, SIGHUP, `POST /config/reload`), including listeners (swapped on the same socket while in-flight requests drain); invalid configs are rejected while the current one keeps serving. Prometheus metrics, JSON access logs with trace IDs, request IDs (UUIDv7), graceful drain, PROXY protocol v1/v2 from trusted load balancers |
 | Tracing | OpenTelemetry: a server span per request and a client span per upstream attempt (so retries are visible), W3C trace context propagation, OTLP/gRPC export, sampling that follows the caller's decision |
 | Errors | One error model rendered as RFC 9457 problem+json for HTTP, the GraphQL error envelope for GraphQL, and Trailers-Only `grpc-status` for gRPC |
-| Plugins | Proxy-Wasm (ABI 0.2.x, the Envoy/Istio standard) on wazero: plugins built with the official Go, Rust or C++ SDKs run unmodified. Supports headers, bodies, local responses, HTTP callouts through gateway clusters, properties, shared data, metrics and timers. A crashing or looping plugin fails only its own request |
+| Plugins | Proxy-Wasm (ABI 0.2.x, the Envoy/Istio standard) on wazero: plugins built with the official Go, Rust or C++ SDKs run unmodified. Supports headers, bodies, local responses, HTTP callouts through gateway clusters, properties, shared data, shared queues, metrics and timers. A crashing or looping plugin fails only its own request |
 | Kubernetes | Gateway API controller (Gateway, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, ReferenceGrant) with status reporting, plus a `PrismaPolicy` CRD that attaches any Prisma feature to Gateways or Routes |
 
 ## Admin API (`admin.address`, optionally `admin.token`)
@@ -181,5 +181,6 @@ a kind cluster.
 - Gateway API: `allowedRoutes` namespace selectors and regex header
   matches. Tested on kind, but the upstream conformance suite has not been
   run yet.
-- Proxy-Wasm: shared queues, gRPC callouts, and callouts from root contexts.
+- Proxy-Wasm: gRPC callouts, callouts from root contexts, and shared queues
+  across plugins (queues are visible within one plugin).
 - Applying tracing changes without a restart.

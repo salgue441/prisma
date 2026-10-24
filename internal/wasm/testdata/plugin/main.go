@@ -49,7 +49,32 @@ func (p *plugin) OnPluginStart(int) types.OnPluginStartStatus {
 	if _, _, err := proxywasm.GetSharedData("hits"); err != nil {
 		_ = proxywasm.SetSharedData("hits", make([]byte, 8), 0)
 	}
+	if _, err := proxywasm.RegisterSharedQueue("events"); err != nil {
+		proxywasm.LogCriticalf("register queue: %v", err)
+		return types.OnPluginStartStatusFailed
+	}
 	return types.OnPluginStartStatusOK
+}
+
+// OnQueueReady drains the events queue into the "events" shared data entry
+// (comma-separated), so tests can observe delivery.
+func (p *plugin) OnQueueReady(queueID uint32) {
+	for {
+		item, err := proxywasm.DequeueSharedQueue(queueID)
+		if err != nil {
+			return
+		}
+		for {
+			cur, cas, _ := proxywasm.GetSharedData("events")
+			next := string(item)
+			if len(cur) > 0 {
+				next = string(cur) + "," + next
+			}
+			if proxywasm.SetSharedData("events", []byte(next), cas) == nil {
+				break
+			}
+		}
+	}
 }
 
 func (p *plugin) NewHttpContext(uint32) types.HttpContext { return &httpCtx{p: p} }
@@ -65,6 +90,18 @@ func (h *httpCtx) OnHttpRequestHeaders(_ int, _ bool) types.Action {
 	h.path, _ = proxywasm.GetHttpRequestHeader(":path")
 	_ = proxywasm.AddHttpRequestHeader("x-wasm-plugin", h.p.tag)
 	switch h.path {
+	case "/enqueue":
+		id, err := proxywasm.ResolveSharedQueue("", "events")
+		if err == nil {
+			ev, _ := proxywasm.GetHttpRequestHeader("x-event")
+			err = proxywasm.EnqueueSharedQueue(id, []byte(ev))
+		}
+		status := uint32(202)
+		if err != nil {
+			status = 500
+		}
+		_ = proxywasm.SendHttpResponse(status, nil, nil, -1)
+		return types.ActionPause
 	case "/deny":
 		_ = proxywasm.SendHttpResponse(403, [][2]string{{"x-denied-by", "wasm"}}, []byte("denied by plugin"), -1)
 		return types.ActionPause

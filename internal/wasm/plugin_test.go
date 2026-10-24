@@ -203,3 +203,38 @@ func TestSerdeRoundTrip(t *testing.T) {
 		t.Error("truncated map must fail")
 	}
 }
+
+func TestPluginSharedQueues(t *testing.T) {
+	p := load(t, `{"tag":"q"}`)
+	ctx := context.Background()
+	for _, ev := range []string{"a", "b", "c"} {
+		s, err := p.NewStream(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Req = httptest.NewRequest("GET", "http://x/enqueue", nil)
+		s.Req.Header.Set("X-Event", ev)
+		if err := s.OnRequestHeaders(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		if l := s.Local(); l == nil || l.Status != 202 {
+			t.Fatalf("enqueue response = %+v", l)
+		}
+		s.Done(ctx)
+	}
+	// proxy_on_queue_ready runs asynchronously on a root context.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if e, ok := p.shared.get("events"); ok && strings.Count(string(e.value), ",") == 2 {
+			for _, ev := range []string{"a", "b", "c"} {
+				if !strings.Contains(string(e.value), ev) {
+					t.Fatalf("events = %q", e.value)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e, _ := p.shared.get("events")
+	t.Fatalf("queued events not delivered: %q", e.value)
+}

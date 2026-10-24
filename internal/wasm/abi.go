@@ -2,7 +2,7 @@
 // Envoy and Istio implement, so plugins built with the official SDKs (Go,
 // Rust, C++, AssemblyScript) run unmodified. It implements the HTTP-filter
 // subset: headers, bodies, local responses, HTTP callouts, properties,
-// shared data, metrics, logging and timers.
+// shared data, shared queues, metrics, logging and timers.
 package wasm
 
 import (

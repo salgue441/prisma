@@ -58,6 +58,7 @@ type Plugin struct {
 	next      atomic.Uint32
 
 	shared  sharedData
+	queues  sharedQueues
 	metrics metricStore
 	closed  chan struct{}
 }
@@ -143,6 +144,7 @@ type instance struct {
 	nextID uint32
 	broken atomic.Bool
 	tick   chan time.Duration
+	ready  chan uint32 // shared queues with new items
 }
 
 func (p *Plugin) newInstance(ctx context.Context) (*instance, error) {
@@ -153,7 +155,7 @@ func (p *Plugin) newInstance(ctx context.Context) (*instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	inst := &instance{p: p, mod: mod, nextID: rootContextID + 1, tick: make(chan time.Duration, 1)}
+	inst := &instance{p: p, mod: mod, nextID: rootContextID + 1, tick: make(chan time.Duration, 1), ready: make(chan uint32, 256)}
 	if inst.malloc = mod.ExportedFunction("proxy_on_memory_allocate"); inst.malloc == nil {
 		if inst.malloc = mod.ExportedFunction("malloc"); inst.malloc == nil {
 			mod.Close(ctx)
@@ -207,7 +209,8 @@ func (inst *instance) call(ctx context.Context, s *Stream, fn string, args ...ui
 	return res[0], nil
 }
 
-// timer drives proxy_on_tick once the plugin sets a tick period.
+// timer drives proxy_on_tick once the plugin sets a tick period, and
+// proxy_on_queue_ready when a shared queue it registered has items.
 func (inst *instance) timer() {
 	var t *time.Ticker
 	var c <-chan time.Time
@@ -233,6 +236,13 @@ func (inst *instance) timer() {
 			}
 			if _, err := inst.call(context.Background(), nil, "proxy_on_tick", rootContextID); err != nil {
 				inst.p.log.Warn("proxy_on_tick failed", "err", err)
+			}
+		case id := <-inst.ready:
+			if inst.broken.Load() {
+				return
+			}
+			if _, err := inst.call(context.Background(), nil, "proxy_on_queue_ready", rootContextID, uint64(id)); err != nil {
+				inst.p.log.Warn("proxy_on_queue_ready failed", "err", err)
 			}
 		}
 	}

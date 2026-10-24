@@ -52,6 +52,7 @@ configuration on reload. Rebuild the `.wasm` and save the config (or `POST
 | Call other services through gateway clusters | `DispatchHttpCall("cluster-name", ...)` |
 | Read request and identity data | `GetProperty`: `request.*`, `source.address`, `route_name`, `prisma.consumer`, `prisma.scopes` |
 | Share state between requests and VMs | `SetSharedData` / `GetSharedData` (with compare-and-swap) |
+| Hand work to a background context | `RegisterSharedQueue` in `OnPluginStart`, `EnqueueSharedQueue` from requests, `OnQueueReady` + `DequeueSharedQueue` in the plugin context |
 | Export metrics | `DefineCounterMetric`, `DefineGaugeMetric`, `DefineHistogramMetric` |
 | Run periodic work | `SetTickPeriodMilliSeconds` / `OnTick` |
 
