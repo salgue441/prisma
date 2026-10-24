@@ -115,7 +115,7 @@ func (c *Config) Validate() error {
 		case d != nil && len(cl.Endpoints) > 0:
 			add("%s: endpoints and discovery are mutually exclusive", where)
 		case d != nil:
-			if d.Host == "" {
+			if d.Host == "" && d.Type != "kubernetes" {
 				add("%s: discovery.host is required", where)
 			}
 			switch d.Type {
@@ -124,8 +124,12 @@ func (c *Config) Validate() error {
 					add("%s: discovery type dns requires a port", where)
 				}
 			case "srv":
+			case "kubernetes":
+				if d.Kubernetes == nil || d.Kubernetes.Service == "" {
+					add("%s: discovery type kubernetes requires kubernetes.service", where)
+				}
 			default:
-				add("%s: discovery.type must be dns or srv", where)
+				add("%s: discovery.type must be dns, srv or kubernetes", where)
 			}
 			if d.Interval < time.Second {
 				add("%s: discovery.interval must be at least 1s", where)
