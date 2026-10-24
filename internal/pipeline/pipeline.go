@@ -79,6 +79,7 @@ type Context struct {
 	// values holds filter-private state shared between a filter's request
 	// and response phases. Keys should be unexported types of that filter.
 	values map[any]any
+	done   []func()
 }
 
 func (c *Context) SetValue(k, v any) {
@@ -89,6 +90,18 @@ func (c *Context) SetValue(k, v any) {
 }
 
 func (c *Context) Value(k any) any { return c.values[k] }
+
+// OnDone registers fn to run once the request has completed, whatever path
+// it took (proxied, rejected, or failed).
+func (c *Context) OnDone(fn func()) { c.done = append(c.done, fn) }
+
+// Finish runs the OnDone callbacks in reverse registration order.
+func (c *Context) Finish() {
+	for i := len(c.done) - 1; i >= 0; i-- {
+		c.done[i]()
+	}
+	c.done = nil
+}
 
 type ctxKey struct{}
 

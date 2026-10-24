@@ -1,0 +1,169 @@
+# Prisma on Kubernetes: kubectl apply -f deploy/kubernetes/prisma.yaml
+# Edit the ConfigMap for your routes; the gateway hot-reloads it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prisma
+  namespace: gateway
+---
+# Kubernetes service discovery reads EndpointSlices. Use a ClusterRole and
+# ClusterRoleBinding instead if upstreams live in several namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prisma-endpointslices
+  namespace: gateway
+rules:
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prisma-endpointslices
+  namespace: gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prisma-endpointslices
+subjects:
+  - kind: ServiceAccount
+    name: prisma
+    namespace: gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prisma-config
+  namespace: gateway
+data:
+  prisma.yaml: |
+    apiVersion: prisma/v1
+    global:
+      shutdownDelay: 5s      # let the load balancer deregister before draining
+      drainTimeout: 25s
+    admin:
+      address: 0.0.0.0:9901
+    listeners:
+      - name: public
+        address: ":8080"
+        protocols: [http1, h2c]
+    clusters:
+      - name: echo
+        discovery:
+          type: kubernetes
+          kubernetes: {service: echo, portName: http}
+        healthCheck: {type: http, path: /, interval: 10s}
+    routes:
+      - name: echo
+        match: {pathPrefix: /}
+        backends: [{cluster: echo}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prisma
+  namespace: gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: prisma}
+  template:
+    metadata:
+      labels: {app: prisma}
+    spec:
+      serviceAccountName: prisma
+      terminationGracePeriodSeconds: 40
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app: prisma}
+      containers:
+        - name: prisma
+          image: prisma:v0.4.0
+          args: ["-config", "/etc/prisma/prisma.yaml"]
+          ports:
+            - {name: http, containerPort: 8080}
+            - {name: admin, containerPort: 9901}
+          readinessProbe:
+            httpGet: {path: /readyz, port: admin}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: admin}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 500m, memory: 256Mi}
+            limits: {memory: 512Mi}
+          env:
+            - name: GOMEMLIMIT
+              value: "460MiB"
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/prisma}
+      volumes:
+        - name: config
+          configMap: {name: prisma-config}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: prisma
+  namespace: gateway
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: {app: prisma}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prisma
+  namespace: gateway
+spec:
+  type: LoadBalancer
+  selector: {app: prisma}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+---
+# Demo upstream discovered through EndpointSlices.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: echo}
+  template:
+    metadata:
+      labels: {app: echo}
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0
+          args: ["-text=hello from echo", "-listen=:5678"]
+          ports:
+            - {name: http, containerPort: 5678}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: gateway
+spec:
+  selector: {app: echo}
+  ports:
+    - {name: http, port: 80, targetPort: http}

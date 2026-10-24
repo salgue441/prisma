@@ -9,15 +9,20 @@ import (
 const APIVersion = "prisma/v1"
 
 type Config struct {
-	APIVersion string            `yaml:"apiVersion" json:"apiVersion"`
-	Global     Global            `yaml:"global" json:"global"`
-	Admin      Admin             `yaml:"admin" json:"admin"`
-	Redis      *Redis            `yaml:"redis,omitempty" json:"redis,omitempty"`
-	Tracing    *Tracing          `yaml:"tracing,omitempty" json:"tracing,omitempty"`
+	APIVersion string   `yaml:"apiVersion" json:"apiVersion"`
+	Global     Global   `yaml:"global" json:"global"`
+	Admin      Admin    `yaml:"admin" json:"admin"`
+	Redis      *Redis   `yaml:"redis,omitempty" json:"redis,omitempty"`
+	Tracing    *Tracing `yaml:"tracing,omitempty" json:"tracing,omitempty"`
+	// GatewayAPI turns on the Kubernetes Gateway API controller: Gateways,
+	// HTTPRoutes, GRPCRoutes and PrismaPolicies are translated into listeners,
+	// routes and policies merged with this file.
+	GatewayAPI *GatewayAPI       `yaml:"gatewayAPI,omitempty" json:"gatewayAPI,omitempty"`
 	Listeners  []Listener        `yaml:"listeners" json:"listeners"`
 	Clusters   []Cluster         `yaml:"clusters" json:"clusters"`
 	Policies   map[string]Policy `yaml:"policies,omitempty" json:"policies,omitempty"`
 	Consumers  []Consumer        `yaml:"consumers,omitempty" json:"consumers,omitempty"`
+	Plugins    []Plugin          `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 	Routes     []Route           `yaml:"routes" json:"routes"`
 }
 
@@ -50,6 +55,25 @@ type Redis struct {
 	DB       int           `yaml:"db" json:"db"`
 	Timeout  time.Duration `yaml:"timeout" json:"timeout"`
 	Prefix   string        `yaml:"prefix" json:"prefix"`
+}
+
+// Plugin is a Proxy-Wasm module (ABI 0.2.x), e.g. built with the official Go,
+// Rust or C++ SDKs. Routes and policies enable it by name.
+type Plugin struct {
+	Name string `yaml:"name" json:"name"`
+	File string `yaml:"file" json:"file"`
+	// Config is passed to the plugin as its plugin configuration: a string
+	// as-is, any other YAML value encoded as JSON.
+	Config   any `yaml:"config,omitempty" json:"config,omitempty"`
+	VMConfig any `yaml:"vmConfig,omitempty" json:"vmConfig,omitempty"`
+	// Instances is the number of VMs (default: GOMAXPROCS, at most 8).
+	Instances int `yaml:"instances" json:"instances"`
+	// Bodies buffers request and response bodies (up to MaxBodyBytes) and
+	// runs the body callbacks; otherwise bodies stream past the plugin.
+	Bodies       bool     `yaml:"bodies" json:"bodies"`
+	MaxBodyBytes ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	// FailOpen continues requests when the plugin traps or fails.
+	FailOpen bool `yaml:"failOpen" json:"failOpen"`
 }
 
 // Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
@@ -92,8 +116,25 @@ type ListenerTLS struct {
 }
 
 type Certificate struct {
-	CertFile string `yaml:"certFile" json:"certFile"`
-	KeyFile  string `yaml:"keyFile" json:"keyFile"`
+	CertFile string `yaml:"certFile,omitempty" json:"certFile,omitempty"`
+	KeyFile  string `yaml:"keyFile,omitempty" json:"keyFile,omitempty"`
+	// CertPEM and KeyPEM carry the pair inline (used for Kubernetes Secrets).
+	CertPEM string `yaml:"certPEM,omitempty" json:"certPEM,omitempty"`
+	KeyPEM  string `yaml:"keyPEM,omitempty" json:"keyPEM,omitempty"`
+}
+
+type GatewayAPI struct {
+	// ControllerName selects the GatewayClasses this gateway implements.
+	ControllerName string `yaml:"controllerName" json:"controllerName"`
+	APIServer      string `yaml:"apiServer,omitempty" json:"apiServer,omitempty"`
+	TokenFile      string `yaml:"tokenFile,omitempty" json:"tokenFile,omitempty"`
+	CAFile         string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
+}
+
+type DirectResponse struct {
+	Status      int    `yaml:"status" json:"status"`
+	Body        string `yaml:"body,omitempty" json:"body,omitempty"`
+	ContentType string `yaml:"contentType,omitempty" json:"contentType,omitempty"`
 }
 
 type Cluster struct {
@@ -120,10 +161,24 @@ type Endpoint struct {
 // "dns" uses A/AAAA records with a fixed port (e.g. Kubernetes headless
 // services); "srv" uses SRV records, which carry ports and weights.
 type Discovery struct {
-	Type     string        `yaml:"type" json:"type"`
-	Host     string        `yaml:"host" json:"host"`
+	Type     string        `yaml:"type" json:"type"` // dns | srv | kubernetes
+	Host     string        `yaml:"host,omitempty" json:"host,omitempty"`
 	Port     int           `yaml:"port,omitempty" json:"port,omitempty"`
 	Interval time.Duration `yaml:"interval" json:"interval"`
+	// Kubernetes watches the EndpointSlices of a Service (type kubernetes).
+	Kubernetes *KubernetesDiscovery `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+}
+
+// KubernetesDiscovery defaults to in-cluster access with the pod's service
+// account; the gateway needs get/list/watch on discovery.k8s.io/endpointslices.
+type KubernetesDiscovery struct {
+	Service   string `yaml:"service" json:"service"`
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	// PortName selects a named Service port; otherwise the only port, or Port.
+	PortName  string `yaml:"portName,omitempty" json:"portName,omitempty"`
+	APIServer string `yaml:"apiServer,omitempty" json:"apiServer,omitempty"`
+	TokenFile string `yaml:"tokenFile,omitempty" json:"tokenFile,omitempty"`
+	CAFile    string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
 }
 
 type UpstreamTLS struct {
@@ -178,6 +233,8 @@ type Policy struct {
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
 	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+	// Plugins run in order; they accumulate across global, policy and route.
+	Plugins []string `yaml:"plugins,omitempty" json:"plugins,omitempty"`
 }
 
 // Cache stores GET responses in the gateway's shared in-memory cache,
@@ -384,8 +441,10 @@ type Route struct {
 	Policy `yaml:",inline" json:",inline"`
 
 	Redirect *Redirect `yaml:"redirect,omitempty" json:"redirect,omitempty"`
-	Rewrite  *Rewrite  `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
-	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
+	// DirectResponse answers at the gateway with a fixed status and body.
+	DirectResponse *DirectResponse `yaml:"directResponse,omitempty" json:"directResponse,omitempty"`
+	Rewrite        *Rewrite        `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
+	Retries        *Retries        `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
 	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
 	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
@@ -403,6 +462,8 @@ type Match struct {
 	Headers     map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 	GRPCService string            `yaml:"grpcService,omitempty" json:"grpcService,omitempty"`
 	GRPCMethod  string            `yaml:"grpcMethod,omitempty" json:"grpcMethod,omitempty"`
+	// QueryParams match exact query parameter values.
+	QueryParams map[string]string `yaml:"queryParams,omitempty" json:"queryParams,omitempty"`
 }
 
 type Redirect struct {

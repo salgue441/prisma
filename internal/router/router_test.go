@@ -34,6 +34,7 @@ func TestMatchPrecedence(t *testing.T) {
 		{Name: "grpc", Match: config.Match{GRPCService: "orders.v1.Orders"}},
 		{Name: "grpc-method", Match: config.Match{GRPCService: "orders.v1.Orders", GRPCMethod: "Delete"}},
 		{Name: "internal-only", Listeners: []string{"internal"}, Match: config.Match{PathPrefix: "/internal"}},
+		{Name: "query", Match: config.Match{PathPrefix: "/api", QueryParams: map[string]string{"v": "2"}}},
 	})
 	cases := []struct {
 		listener, method, host, path, header, want string
@@ -53,6 +54,8 @@ func TestMatchPrecedence(t *testing.T) {
 		{"public", "POST", "x.com", "/orders.v1.Orders/Delete", "", "grpc-method"},
 		{"public", "GET", "x.com", "/internal/x", "", "catch-all"},
 		{"internal", "GET", "x.com", "/internal/x", "", "internal-only"},
+		{"public", "GET", "x.com", "/api/x?v=2", "", "query"},
+		{"public", "GET", "x.com", "/api/x?v=3", "", "api"},
 	}
 	for _, tc := range cases {
 		req := httptest.NewRequest(tc.method, "http://"+tc.host+tc.path, nil)

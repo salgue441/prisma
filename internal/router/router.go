@@ -29,13 +29,14 @@ type Route struct {
 	re        *regexp.Regexp
 	methods   []string
 	headers   map[string]string
+	query     map[string]string
 	index     int
 }
 
 // NewRoute compiles cfg. index is the declaration order, used as a tie-breaker.
 func NewRoute(cfg *config.Route, index int, h http.Handler) (*Route, error) {
 	m := cfg.Match
-	r := &Route{Name: cfg.Name, Config: cfg, Handler: h, index: index, headers: m.Headers}
+	r := &Route{Name: cfg.Name, Config: cfg, Handler: h, index: index, headers: m.Headers, query: m.QueryParams}
 	if len(cfg.Listeners) > 0 {
 		r.listeners = map[string]bool{}
 		for _, l := range cfg.Listeners {
@@ -96,6 +97,14 @@ func (r *Route) matches(listener string, req *http.Request) bool {
 		got := req.Header.Values(k)
 		if len(got) == 0 || (v != "*" && !slices.Contains(got, v)) {
 			return false
+		}
+	}
+	if len(r.query) > 0 {
+		q := req.URL.Query()
+		for k, v := range r.query {
+			if got, ok := q[k]; !ok || !slices.Contains(got, v) {
+				return false
+			}
 		}
 	}
 	return true
@@ -162,7 +171,7 @@ func sortRoutes(rs []*Route) {
 		if c := cmp.Compare(len(b.prefix)+len(b.exact), len(a.prefix)+len(a.exact)); c != 0 {
 			return c
 		}
-		if c := cmp.Compare(len(b.methods)+len(b.headers), len(a.methods)+len(a.headers)); c != 0 {
+		if c := cmp.Compare(len(b.methods)+len(b.headers)+len(b.query), len(a.methods)+len(a.headers)+len(a.query)); c != 0 {
 			return c
 		}
 		if c := cmp.Compare(b.Config.Priority, a.Config.Priority); c != 0 {

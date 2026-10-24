@@ -86,10 +86,7 @@ func (f *Rewrite) OnRequest(c *pipeline.Context) pipeline.Responder {
 	p := u.Path
 	if f.cfg.StripPrefix != "" {
 		if rest, ok := strings.CutPrefix(p, f.cfg.StripPrefix); ok {
-			p = f.cfg.ReplacePrefix + rest
-			if !strings.HasPrefix(p, "/") {
-				p = "/" + p
-			}
+			p = joinPath(f.cfg.ReplacePrefix, rest)
 		}
 	}
 	if f.re != nil {
@@ -105,3 +102,38 @@ func (f *Rewrite) OnRequest(c *pipeline.Context) pipeline.Responder {
 }
 
 func (response) ServedByGateway() {}
+
+// joinPath joins a replacement prefix and the remaining path without
+// doubling or losing the separator: ("/", "/bar") -> "/bar",
+// ("/v2", "/bar") -> "/v2/bar", ("", "") -> "/".
+func joinPath(prefix, rest string) string {
+	p := strings.TrimSuffix(prefix, "/") + rest
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+// Direct answers with a fixed response (maintenance pages, or 500 for
+// Gateway API routes whose backends cannot be resolved).
+type Direct struct{ cfg *config.DirectResponse }
+
+func NewDirect(cfg *config.DirectResponse) *Direct { return &Direct{cfg: cfg} }
+
+func (f *Direct) Name() string { return "direct_response" }
+
+func (f *Direct) OnRequest(*pipeline.Context) pipeline.Responder { return directResponse{f.cfg} }
+
+type directResponse struct{ cfg *config.DirectResponse }
+
+func (d directResponse) Respond(w http.ResponseWriter, _ protocol.Kind) {
+	ct := d.cfg.ContentType
+	if ct == "" {
+		ct = "text/plain; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.WriteHeader(d.cfg.Status)
+	_, _ = w.Write([]byte(d.cfg.Body))
+}
+
+func (directResponse) ServedByGateway() {}

@@ -137,6 +137,7 @@ func (g *Gateway) finish(c *pipeline.Context, rec *recorder, snap *Snapshot, spa
 			grpcStatus = h.Get(http.TrailerPrefix + "Grpc-Status")
 		}
 	}
+	c.Finish()
 	elapsed := time.Since(c.Start)
 	proto := c.Protocol.String()
 	g.metrics.Requests.WithLabelValues(c.Listener, c.RouteName, proto, strconv.Itoa(status), grpcStatus).Inc()

@@ -43,7 +43,7 @@ func (c *Config) Validate() error {
 
 	listeners := map[string]bool{}
 	addresses := map[string]string{}
-	if len(c.Listeners) == 0 {
+	if len(c.Listeners) == 0 && c.GatewayAPI == nil {
 		add("listeners: at least one listener is required")
 	}
 	for i, l := range c.Listeners {
@@ -80,6 +80,12 @@ func (c *Config) Validate() error {
 			if len(t.Certificates) == 0 {
 				add("%s: tls requires at least one certificate", where)
 			}
+			for j, cert := range t.Certificates {
+				files, inline := cert.CertFile != "" || cert.KeyFile != "", cert.CertPEM != "" || cert.KeyPEM != ""
+				if files == inline {
+					add("%s: tls.certificates[%d] needs certFile+keyFile or certPEM+keyPEM", where, j)
+				}
+			}
 			if !slices.Contains([]string{"1.2", "1.3"}, t.MinVersion) {
 				add("%s: tls.minVersion must be 1.2 or 1.3", where)
 			}
@@ -115,7 +121,7 @@ func (c *Config) Validate() error {
 		case d != nil && len(cl.Endpoints) > 0:
 			add("%s: endpoints and discovery are mutually exclusive", where)
 		case d != nil:
-			if d.Host == "" {
+			if d.Host == "" && d.Type != "kubernetes" {
 				add("%s: discovery.host is required", where)
 			}
 			switch d.Type {
@@ -124,8 +130,12 @@ func (c *Config) Validate() error {
 					add("%s: discovery type dns requires a port", where)
 				}
 			case "srv":
+			case "kubernetes":
+				if d.Kubernetes == nil || d.Kubernetes.Service == "" {
+					add("%s: discovery type kubernetes requires kubernetes.service", where)
+				}
 			default:
-				add("%s: discovery.type must be dns or srv", where)
+				add("%s: discovery.type must be dns, srv or kubernetes", where)
 			}
 			if d.Interval < time.Second {
 				add("%s: discovery.interval must be at least 1s", where)
@@ -177,8 +187,37 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	plugins := map[string]bool{}
+	for i, pl := range c.Plugins {
+		if pl.Name == "" {
+			add("plugins[%d]: name is required", i)
+		} else if plugins[pl.Name] {
+			add("plugins[%d]: duplicate plugin %q", i, pl.Name)
+		}
+		plugins[pl.Name] = true
+		if pl.File == "" {
+			add("plugins[%d] (%s): file is required", i, pl.Name)
+		}
+		if pl.Instances < 0 {
+			add("plugins[%d] (%s): instances must not be negative", i, pl.Name)
+		}
+	}
+	checkPlugins := func(where string, names []string) {
+		for _, n := range names {
+			if !plugins[n] {
+				add("%s: unknown plugin %q", where, n)
+			}
+		}
+	}
+	for name, p := range c.Policies {
+		checkPlugins("policies."+name, p.Plugins)
+	}
+	for i := range c.Routes {
+		checkPlugins(fmt.Sprintf("routes[%d] (%s)", i, c.Routes[i].Name), c.Routes[i].Plugins)
+	}
+
 	routes := map[string]bool{}
-	if len(c.Routes) == 0 {
+	if len(c.Routes) == 0 && c.GatewayAPI == nil {
 		add("routes: at least one route is required")
 	}
 	for i := range c.Routes {
@@ -240,8 +279,15 @@ func (c *Config) Validate() error {
 			if r.Redirect.PathPrefixReplace != "" && m.PathPrefix == "" {
 				add("%s: redirect.pathPrefixReplace requires match.pathPrefix", where)
 			}
+		} else if dr := r.DirectResponse; dr != nil {
+			if len(r.Backends) > 0 {
+				add("%s: directResponse routes cannot have backends", where)
+			}
+			if dr.Status < 100 || dr.Status > 599 {
+				add("%s: directResponse.status must be a valid HTTP status", where)
+			}
 		} else if len(r.Backends) == 0 {
-			add("%s: backends are required unless the route redirects", where)
+			add("%s: backends are required unless the route redirects or responds directly", where)
 		}
 		for _, b := range r.Backends {
 			if !clusters[b.Cluster] {
@@ -449,4 +495,19 @@ func (c *Config) checkRedirectLoops(add func(string, ...any)) {
 			seen[cur] = true
 		}
 	}
+}
+
+// ValidatePolicy checks a single policy against c, e.g. one generated from
+// a Kubernetes PrismaPolicy, so an invalid policy can be rejected on its own
+// instead of failing the whole configuration.
+func (c *Config) ValidatePolicy(where string, p *Policy) error {
+	var errs []error
+	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	c.validatePolicy(where, p, add)
+	for _, name := range p.Plugins {
+		if !slices.ContainsFunc(c.Plugins, func(pl Plugin) bool { return pl.Name == name }) {
+			add("%s: unknown plugin %q", where, name)
+		}
+	}
+	return errors.Join(errs...)
 }

@@ -108,7 +108,13 @@ func (s *Server) ReloadCertificates() error {
 	}
 	var certs []tls.Certificate
 	for _, c := range s.cfg.TLS.Certificates {
-		cert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		var cert tls.Certificate
+		var err error
+		if c.CertPEM != "" {
+			cert, err = tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM))
+		} else {
+			cert, err = tls.LoadX509KeyPair(c.CertFile, c.KeyFile)
+		}
 		if err != nil {
 			return fmt.Errorf("listener %s: %w", s.Name, err)
 		}
