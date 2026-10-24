@@ -50,6 +50,9 @@ type Context struct {
 	RequestID    string
 	Start        time.Time
 	OriginalPath string
+	// AcceptEncoding is the client's original Accept-Encoding; filters may
+	// strip the header before proxying (e.g. masking needs identity bodies).
+	AcceptEncoding string
 
 	Principal *Principal
 	GraphQL   *GraphQLInfo

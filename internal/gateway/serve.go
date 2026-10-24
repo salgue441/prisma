@@ -48,12 +48,13 @@ func (g *Gateway) serve(listener string, w http.ResponseWriter, r *http.Request)
 	trustedPeer := snap.isTrusted(peer)
 
 	c := &pipeline.Context{
-		Listener:     listener,
-		Start:        time.Now(),
-		OriginalPath: r.URL.Path,
-		ClientIP:     clientIP(r, peer, trustedPeer, snap),
-		RequestID:    requestID(r, trustedPeer),
-		RouteName:    "-",
+		Listener:       listener,
+		Start:          time.Now(),
+		OriginalPath:   r.URL.Path,
+		AcceptEncoding: r.Header.Get("Accept-Encoding"),
+		ClientIP:       clientIP(r, peer, trustedPeer, snap),
+		RequestID:      requestID(r, trustedPeer),
+		RouteName:      "-",
 	}
 	defer g.finish(c, rec, snap)
 

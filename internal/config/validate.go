@@ -296,6 +296,13 @@ func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any
 			}
 		}
 	}
+	if cp := p.Compression; cp != nil {
+		for _, a := range cp.Algorithms {
+			if a != "gzip" && a != "zstd" {
+				add("%s: compression: unknown algorithm %q (gzip, zstd)", where, a)
+			}
+		}
+	}
 	if m := p.Masking; m != nil {
 		if !slices.Contains([]string{"", "closed", "open"}, m.OnFailure) {
 			add("%s: masking.onFailure must be closed or open", where)
