@@ -216,6 +216,20 @@ func (c *Config) ApplyDefaults() {
 				r.Backends[j].Weight = 1
 			}
 		}
+		if m := r.Mirror; m != nil {
+			if m.Percent == 0 {
+				m.Percent = 100
+			}
+			if m.MaxBodyBytes == 0 {
+				m.MaxBodyBytes = 1 << 20
+			}
+			if m.Timeout == 0 {
+				m.Timeout = 10 * time.Second
+			}
+			if m.MaxConcurrent == 0 {
+				m.MaxConcurrent = 100
+			}
+		}
 		if rt := r.Retries; rt != nil {
 			if len(rt.On) == 0 {
 				rt.On = []string{"connect-failure", "503"}

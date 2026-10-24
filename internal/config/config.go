@@ -345,6 +345,7 @@ type Route struct {
 	Retries  *Retries  `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
 	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
+	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
 	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
@@ -385,6 +386,17 @@ type Retries struct {
 	Budget             float64       `yaml:"budget" json:"budget"`
 	Backoff            time.Duration `yaml:"backoff" json:"backoff"`
 	AllowNonIdempotent bool          `yaml:"allowNonIdempotent" json:"allowNonIdempotent"`
+}
+
+// Mirror copies a sample of a route's traffic to a shadow cluster. Shadow
+// responses are discarded; the Host header gets a "-shadow" suffix.
+type Mirror struct {
+	Cluster      string        `yaml:"cluster" json:"cluster"`
+	Percent      float64       `yaml:"percent" json:"percent"`
+	MaxBodyBytes ByteSize      `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	Timeout      time.Duration `yaml:"timeout" json:"timeout"`
+	// MaxConcurrent caps in-flight shadow requests; extra ones are dropped.
+	MaxConcurrent int `yaml:"maxConcurrent" json:"maxConcurrent"`
 }
 
 type Backend struct {

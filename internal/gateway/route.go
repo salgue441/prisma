@@ -45,6 +45,7 @@ type routeHandler struct {
 	backends    []backend
 	totalWeight int
 	retry       *upstream.RetryPolicy
+	mirror      *mirror
 }
 
 // buildRoute assembles the filter chain in phase order:
@@ -128,6 +129,9 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		h.backends = append(h.backends, backend{cluster: cl, proxy: d.gw.newProxy(cl, &h.chain, d.snap), weight: b.Weight})
 		h.totalWeight += b.Weight
 	}
+	if mc := rc.Mirror; mc != nil {
+		h.mirror = newMirror(rc.Name, mc, d.snap.Clusters[mc.Cluster], m)
+	}
 	return h, nil
 }
 
@@ -140,6 +144,9 @@ func (h *routeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(h.backends) == 0 {
 		respond(w, c, gwerr.Internal().WithReason("route has no backends"))
 		return
+	}
+	if h.mirror != nil {
+		h.mirror.maybeSend(c)
 	}
 	b := h.pick()
 	ctx := upstream.WithRetryPolicy(c.Request.Context(), h.retry)
