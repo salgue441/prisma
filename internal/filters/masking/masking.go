@@ -21,6 +21,8 @@ import (
 	"strings"
 	"unicode"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	"prisma/internal/config"
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
@@ -51,6 +53,8 @@ type Filter struct {
 	maxBuf      int64
 	hashKey     []byte
 	metrics     *telemetry.Metrics
+	// grpcOutputs maps full gRPC method names to response message types.
+	grpcOutputs map[string]protoreflect.MessageDescriptor
 }
 
 var processHashKey = func() []byte {
@@ -103,6 +107,13 @@ func New(route string, cfg *config.Masking, m *telemetry.Metrics) (*Filter, erro
 		}
 		f.detectors = append(f.detectors, d)
 	}
+	if cfg.DescriptorSet != "" {
+		outputs, err := loadDescriptors(cfg.DescriptorSet)
+		if err != nil {
+			return nil, err
+		}
+		f.grpcOutputs = outputs
+	}
 	return f, nil
 }
 
@@ -116,11 +127,15 @@ func (f *Filter) bypass(c *pipeline.Context) bool {
 func (f *Filter) OnRequest(c *pipeline.Context) pipeline.Responder {
 	if !f.bypass(c) {
 		c.Request.Header.Del("Accept-Encoding")
+		c.Request.Header.Del("Grpc-Accept-Encoding")
 	}
 	return nil
 }
 
 func (f *Filter) OnResponse(c *pipeline.Context, resp *http.Response) error {
+	if !f.bypass(c) && c.Protocol.IsGRPC() && strings.HasPrefix(resp.Header.Get("Content-Type"), "application/grpc") {
+		return f.onGRPCResponse(c, resp)
+	}
 	if f.bypass(c) || !isJSON(resp.Header.Get("Content-Type")) ||
 		resp.Body == nil || resp.Body == http.NoBody || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
 		return nil
@@ -147,6 +162,27 @@ func (f *Filter) OnResponse(c *pipeline.Context, resp *http.Response) error {
 	resp.ContentLength = int64(len(out))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
 	resp.Header.Del("Content-Md5")
+	return nil
+}
+
+// onGRPCResponse streams the response through a per-message masker. The
+// response type comes from the descriptor set; without one, masking a gRPC
+// route is a misconfiguration and fails closed.
+func (f *Filter) onGRPCResponse(c *pipeline.Context, resp *http.Response) error {
+	ct := resp.Header.Get("Content-Type")
+	if ct != "application/grpc" && ct != "application/grpc+proto" {
+		return f.fail(resp, nil, "cannot mask gRPC content type "+ct)
+	}
+	md := f.grpcOutputs[c.Request.URL.Path]
+	if md == nil {
+		return f.fail(resp, nil, "no descriptor for "+c.Request.URL.Path+" (set masking.descriptorSet)")
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{&grpcMasker{f: f, md: md, src: resp.Body, maxMsg: f.maxBuf}, resp.Body}
+	resp.Header.Del("Content-Length")
+	resp.ContentLength = -1
 	return nil
 }
 
