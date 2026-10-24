@@ -362,6 +362,23 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) validatePolicy(where string, p *Policy, add func(string, ...any)) {
+	if o := p.OpenAPI; o != nil {
+		if (o.Spec == "") == (o.SpecFile == "") {
+			add("%s: openapi requires exactly one of spec or specFile", where)
+		}
+		if !slices.Contains([]string{"", "enforce", "report"}, o.Mode) {
+			add("%s: openapi.mode must be enforce or report", where)
+		}
+		if !slices.Contains([]string{"", "reject", "allow"}, o.UnknownOperations) {
+			add("%s: openapi.unknownOperations must be reject or allow", where)
+		}
+		if !slices.Contains([]string{"", "off", "report"}, o.Responses) {
+			add("%s: openapi.responses must be off or report", where)
+		}
+		if o.BasePath != "" && !strings.HasPrefix(o.BasePath, "/") {
+			add("%s: openapi.basePath must start with /", where)
+		}
+	}
 	if a := p.AuthN; a != nil {
 		if !slices.Contains([]string{"", "any", "all"}, a.Mode) {
 			add("%s: authn.mode must be any or all", where)

@@ -31,6 +31,7 @@ type Metrics struct {
 	StreamConnections *prometheus.CounterVec
 	StreamActive      *prometheus.GaugeVec
 	StreamBytes       *prometheus.CounterVec
+	OpenAPI           *prometheus.CounterVec
 }
 
 func NewMetrics() *Metrics {
@@ -96,10 +97,13 @@ func NewMetrics() *Metrics {
 		StreamBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "prisma_tcp_bytes_total", Help: "Bytes proxied on TCP routes (direction: upstream, downstream).",
 		}, []string{"listener", "route", "direction"}),
+		OpenAPI: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "prisma_openapi_validations_total", Help: "OpenAPI validations by phase (request, response) and result (valid, invalid, unknown_operation).",
+		}, []string{"route", "phase", "result"}),
 	}
 	reg.MustRegister(m.Requests, m.Duration, m.UpstreamRequests, m.UpstreamDuration, m.Retries,
 		m.RateLimit, m.AuthFailures, m.MaskingFailures, m.ExtAuthz, m.Mirror, m.Cache, m.WasmMetric, m.EndpointHealthy, m.CircuitOpen,
-		m.ConfigReloads, m.ConfigInfo, m.StreamConnections, m.StreamActive, m.StreamBytes)
+		m.ConfigReloads, m.ConfigInfo, m.StreamConnections, m.StreamActive, m.StreamBytes, m.OpenAPI)
 	return m
 }
 

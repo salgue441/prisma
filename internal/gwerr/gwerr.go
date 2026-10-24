@@ -34,6 +34,15 @@ type Error struct {
 	// Reason is logged but never sent to clients.
 	Reason string
 	Header http.Header
+	// Details are sent to clients as the problem document's "errors" member.
+	Details []Detail
+}
+
+// Detail points at one invalid part of a request.
+type Detail struct {
+	In      string `json:"in"`              // path, query, header, cookie or body
+	Field   string `json:"field,omitempty"` // parameter name or JSON pointer
+	Message string `json:"message"`
 }
 
 func (e *Error) Error() string {
@@ -71,6 +80,17 @@ func BadRequest(code, msg string) *Error {
 func TooComplex(msg string) *Error {
 	return newErr("QUERY_TOO_COMPLEX", http.StatusBadRequest, grpcInvalidArgument, msg)
 }
+func MethodNotAllowed(msg string) *Error {
+	return newErr("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, grpcUnimplemented, msg)
+}
+
+// ValidationFailed rejects a request that does not match its API contract.
+func ValidationFailed(details []Detail) *Error {
+	e := newErr("REQUEST_VALIDATION_FAILED", http.StatusBadRequest, grpcInvalidArgument, "request does not match the API specification")
+	e.Details = details
+	return e
+}
+
 func PayloadTooLarge() *Error {
 	return newErr("PAYLOAD_TOO_LARGE", http.StatusRequestEntityTooLarge, grpcResourceExhausted, "request body too large")
 }
@@ -127,13 +147,17 @@ func (e *Error) Respond(w http.ResponseWriter, kind protocol.Kind) {
 	default:
 		h.Set("Content-Type", "application/problem+json")
 		w.WriteHeader(e.HTTPStatus)
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		doc := map[string]any{
 			"type":   "about:blank",
 			"title":  http.StatusText(e.HTTPStatus),
 			"status": e.HTTPStatus,
 			"detail": e.Message,
 			"code":   e.Code,
-		})
+		}
+		if len(e.Details) > 0 {
+			doc["errors"] = e.Details
+		}
+		_ = json.NewEncoder(w).Encode(doc)
 	}
 }
 

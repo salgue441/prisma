@@ -20,6 +20,7 @@ import (
 	"prisma/internal/filters/grpcweb"
 	"prisma/internal/filters/headers"
 	"prisma/internal/filters/masking"
+	"prisma/internal/filters/openapi"
 	"prisma/internal/filters/ratelimit"
 	"prisma/internal/filters/redirect"
 	"prisma/internal/filters/wasmplugin"
@@ -113,6 +114,18 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if len(pol.RateLimit) > 0 {
 		ch.Request = append(ch.Request, ratelimit.New(rc.Name, pol.RateLimit, d.gw.local, d.redis, m))
 	}
+	var openapiFilter *openapi.Filter
+	if pol.OpenAPI != nil {
+		f, err := openapi.New(rc.Name, pol.OpenAPI, m)
+		if err != nil {
+			return nil, err
+		}
+		// After authentication and rate limits (anonymous callers learn nothing
+		// about the schema), before caching and rewrites (the document
+		// describes the client-facing paths).
+		openapiFilter = f
+		ch.Request = append(ch.Request, f)
+	}
 	var cacheFilter *cache.Filter
 	if pol.Cache != nil {
 		// After authn, authz and rate limiting: hits are still authorized and
@@ -153,6 +166,10 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		// Outermost: store exactly what the client receives (masked and
 		// compressed; Vary: Accept-Encoding keeps encodings apart).
 		ch.Response = append([]pipeline.ResponseFilter{cacheFilter}, ch.Response...)
+	}
+	if openapiFilter != nil && pol.OpenAPI.Responses == "report" {
+		// Innermost: check the upstream's own response, before masking.
+		ch.Response = append(ch.Response, openapiFilter)
 	}
 
 	for _, b := range rc.Backends {
