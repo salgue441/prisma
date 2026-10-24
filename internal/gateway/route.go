@@ -12,6 +12,7 @@ import (
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
 	"prisma/internal/filters/authz"
+	"prisma/internal/filters/compression"
 	"prisma/internal/filters/cors"
 	"prisma/internal/filters/graphqlguard"
 	"prisma/internal/filters/headers"
@@ -98,6 +99,10 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 		ch.Request = append(ch.Request, f)
 		// Masking runs last on the way out (first registered = outermost).
 		ch.Response = append([]pipeline.ResponseFilter{f}, ch.Response...)
+	}
+	if pol.Compression != nil {
+		// Outermost on the way out: compress the final (masked) body.
+		ch.Response = append([]pipeline.ResponseFilter{compression.New(pol.Compression)}, ch.Response...)
 	}
 
 	for _, b := range rc.Backends {

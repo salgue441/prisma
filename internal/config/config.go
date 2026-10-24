@@ -134,13 +134,22 @@ type CircuitBreaker struct {
 // Policy is a reusable bundle of route-level filters. Routes embed the same
 // fields inline; route values override policy values.
 type Policy struct {
-	AuthN     *AuthN      `yaml:"authn,omitempty" json:"authn,omitempty"`
-	AuthZ     *AuthZ      `yaml:"authz,omitempty" json:"authz,omitempty"`
-	RateLimit []RateLimit `yaml:"rateLimit,omitempty" json:"rateLimit,omitempty"`
-	Masking   *Masking    `yaml:"masking,omitempty" json:"masking,omitempty"`
-	Headers   *Headers    `yaml:"headers,omitempty" json:"headers,omitempty"`
-	GraphQL   *GraphQL    `yaml:"graphql,omitempty" json:"graphql,omitempty"`
-	CORS      *CORS       `yaml:"cors,omitempty" json:"cors,omitempty"`
+	AuthN       *AuthN       `yaml:"authn,omitempty" json:"authn,omitempty"`
+	AuthZ       *AuthZ       `yaml:"authz,omitempty" json:"authz,omitempty"`
+	RateLimit   []RateLimit  `yaml:"rateLimit,omitempty" json:"rateLimit,omitempty"`
+	Masking     *Masking     `yaml:"masking,omitempty" json:"masking,omitempty"`
+	Headers     *Headers     `yaml:"headers,omitempty" json:"headers,omitempty"`
+	GraphQL     *GraphQL     `yaml:"graphql,omitempty" json:"graphql,omitempty"`
+	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
+	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
+}
+
+type Compression struct {
+	// Algorithms in server preference order: zstd, gzip. Default: [zstd, gzip].
+	Algorithms []string `yaml:"algorithms,omitempty" json:"algorithms,omitempty"`
+	MinBytes   ByteSize `yaml:"minBytes" json:"minBytes"`
+	// Types are compressible media types; a trailing "/*" matches a family.
+	Types []string `yaml:"types,omitempty" json:"types,omitempty"`
 }
 
 type CORS struct {

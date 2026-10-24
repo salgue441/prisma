@@ -395,6 +395,44 @@ routes:
 	}
 }
 
+func TestCompressionAppliesAfterMasking(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ssn":"123-45-6789","filler":"`+strings.Repeat("abc", 2000)+`"}`)
+	}))
+	defer up.Close()
+	_, gw := newGateway(t, basePrefix+`
+clusters:
+  - name: up
+    endpoints: [{address: "{{up}}"}]
+routes:
+  - name: r
+    match: {pathPrefix: /}
+    masking: {rules: [{selector: "$.ssn", strategy: redact}]}
+    compression: {algorithms: [gzip]}
+    backends: [{cluster: up}]
+`, map[string]string{"up": addr(up)})
+
+	req, _ := http.NewRequest(http.MethodGet, gw.URL+"/", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultTransport.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("not compressed: %v", resp.Header)
+	}
+	zr, err := gzip.NewReader(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := io.ReadAll(zr)
+	if !strings.Contains(string(plain), `"ssn":"***"`) {
+		t.Errorf("body was compressed before masking: %.80s", plain)
+	}
+}
+
 func TestRetriesFailOverToHealthyEndpoint(t *testing.T) {
 	var badHits atomic.Int32
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
