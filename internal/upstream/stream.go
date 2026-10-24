@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"time"
 
 	"prisma/internal/gwerr"
@@ -19,14 +20,13 @@ type StreamConn struct {
 	Endpoint string
 	Attempts int
 	release  func()
+	once     sync.Once
 }
 
+// Close is safe to call more than once and from several goroutines.
 func (s *StreamConn) Close() error {
 	err := s.Conn.Close()
-	if s.release != nil {
-		s.release()
-		s.release = nil
-	}
+	s.once.Do(s.release)
 	return err
 }
 
