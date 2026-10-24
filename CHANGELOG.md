@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-23
+
+### Added
+- **External authorization**: Envoy-compatible HTTP ext_authz. The
+  authorization service receives the request metadata and the authenticated
+  principal; it can inject allow-listed headers upstream or deny with its own
+  response. It fails closed (503) unless `failOpen` is set.
+- **GraphQL schema validation and field-level authorization**: rules on
+  `Type.field` or `Type.*` that reject the operation or strip the field and
+  rewrite the query, resolved through aliases, fragments and interfaces.
+- **gRPC response masking**: the masking selectors and detectors now apply
+  inside Protobuf messages, frame by frame, using a `FileDescriptorSet`. It
+  works with streaming and gRPC-Web.
+- **Traffic mirroring**: sampled, fire-and-forget copies to a shadow cluster,
+  taken after authentication, with a concurrency cap.
+- **Response cache**: a shared in-memory LRU that honors Cache-Control, Age
+  and Vary, with separate entries per consumer by default. Purged on reload
+  when a route's config changes; admin `GET /cache` and `POST /cache/purge`.
+- **HMAC request signing**: a new authentication provider with a canonical
+  string-to-sign, a timestamp window, replay protection and a reference
+  `authn.Sign` function.
+- **PROXY protocol v1/v2** on listeners, accepted only from trusted CIDRs and
+  parsed without blocking the accept loop.
+- **Listener hot reload**: listeners can be added, removed, moved or changed
+  without a restart. Changed listeners are swapped on the same socket while
+  in-flight requests drain, and a bind failure aborts the reload with nothing
+  changed.
+- Access logs report requests the gateway answered itself (cache hits,
+  redirects, CORS preflights) as `served_by`, plus the cache status.
+
+### Fixed
+- gRPC-Web translation ran before the other response filters, so they saw
+  gRPC-Web bytes instead of native gRPC.
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
