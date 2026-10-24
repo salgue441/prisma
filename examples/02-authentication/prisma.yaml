@@ -1,0 +1,96 @@
+# Authentication and authorization: JWT, API keys and HMAC-signed requests.
+#   export PRISMA_JWT_SECRET='dev-secret-dev-secret-dev-secret!'
+#   export PRISMA_DEMO_API_KEY=demo-key PRISMA_HMAC_SECRET=partner-secret-partner-secret-32b
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/02-authentication/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "localhost:9001"}]
+
+policies:
+  jwt:
+    authn:
+      jwt: &jwt
+        secret: "${env:PRISMA_JWT_SECRET}"   # production: jwksUri instead
+        issuer: https://auth.local/
+        audiences: [prisma-demo]
+  api-key:
+    authn:
+      apiKey: &apiKey {header: X-API-Key}
+  # A policy's authn replaces earlier ones rather than merging, so a route
+  # that accepts both lists both methods in one block.
+  jwt-or-api-key:
+    authn:
+      mode: any        # any one method is enough (the default); "all" requires every one
+      jwt: *jwt
+      apiKey: *apiKey
+
+consumers:
+  - name: mobile-app
+    apiKeys: ["${env:PRISMA_DEMO_API_KEY}"]
+    scopes: [orders:read]
+  - name: batch-job
+    # Keys can be stored as SHA-256 digests; this one is the key "batch-key".
+    apiKeys: ["sha256:9d8db2a67d146638c07fbb5652ad998062e2e2fa857eef026c40c444b07e3872"]
+    scopes: [orders:read, orders:write]
+  - name: partner
+    hmacKeys: {partner-key: "${env:PRISMA_HMAC_SECRET}"}
+    scopes: [orders:read, orders:write]
+
+routes:
+  # JWT bearer tokens. Reads need orders:read; writes also need orders:write.
+  - name: jwt-orders
+    match: {pathPrefix: /jwt/orders}
+    use: [jwt]
+    authz:
+      scopes: [orders:read]
+      methods: {POST: [orders:write]}
+    rewrite: {stripPrefix: /jwt}
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+    backends: [{cluster: orders}]
+
+  # API keys in the X-API-Key header.
+  - name: key-orders
+    match: {pathPrefix: /key/orders}
+    use: [api-key]
+    authz:
+      scopes: [orders:read]
+      methods: {POST: [orders:write]}
+    rewrite: {stripPrefix: /key}
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+    backends: [{cluster: orders}]
+
+  # Either credential is accepted (mode: any is the default).
+  - name: any-orders
+    match: {pathPrefix: /any/orders}
+    use: [jwt-or-api-key]
+    authz: {scopes: [orders:read]}
+    rewrite: {stripPrefix: /any}
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+    backends: [{cluster: orders}]
+
+  # HMAC-signed requests with replay protection, restricted to one consumer.
+  - name: signed-orders
+    match: {pathPrefix: /signed/orders}
+    authn:
+      hmac: {clockSkew: 2m}
+    authz:
+      consumers: [partner]
+      allowIPs: [127.0.0.0/8, "::1/128"]
+    rewrite: {stripPrefix: /signed}
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+    backends: [{cluster: orders}]

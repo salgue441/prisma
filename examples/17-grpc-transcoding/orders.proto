@@ -1,0 +1,76 @@
+// The service the demo upstream serves on :9004 (see internal/demo). With
+// protoc, the descriptor set for this file is built with:
+//
+//   protoc -I . -I third_party/googleapis --include_imports \
+//     --descriptor_set_out=shop.binpb shop/v1/orders.proto
+//
+// The demo writes the same set with: go run ./cmd/demo-upstream -write-descriptors <file>
+syntax = "proto3";
+
+package shop.v1;
+
+import "google/api/annotations.proto";
+
+service Orders {
+  rpc GetOrder(GetOrderRequest) returns (Order) {
+    option (google.api.http) = {get: "/v1/orders/{id}"};
+  }
+  rpc CreateOrder(CreateOrderRequest) returns (Order) {
+    option (google.api.http) = {post: "/v1/shops/{shop}/orders" body: "order"};
+  }
+  rpc ListOrders(ListOrdersRequest) returns (stream Order) {
+    option (google.api.http) = {get: "/v1/shops/{shop}/orders"};
+  }
+  rpc UpdateOrder(UpdateOrderRequest) returns (Order) {
+    option (google.api.http) = {
+      patch: "/v1/orders/{order.id}"
+      body: "order"
+      additional_bindings {put: "/v1/orders/{order.id}" body: "*"}
+    };
+  }
+  rpc CancelOrder(GetOrderRequest) returns (Order) {
+    option (google.api.http) = {post: "/v1/orders/{id}:cancel" response_body: "customer"};
+  }
+  // No annotation: reachable with autoMapping as POST /shop.v1.Orders/Ping.
+  rpc Ping(GetOrderRequest) returns (GetOrderRequest);
+}
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  SHIPPED = 2;
+}
+
+message Customer {
+  string name = 1;
+  string email = 2;
+}
+
+message Order {
+  string id = 1;
+  string item = 2;
+  int32 qty = 3;
+  Status status = 4;
+  repeated string tags = 5;
+  Customer customer = 6;
+}
+
+message GetOrderRequest {
+  string id = 1;
+  bool include_items = 2;
+}
+
+message CreateOrderRequest {
+  string shop = 1;
+  Order order = 2;
+}
+
+message ListOrdersRequest {
+  string shop = 1;
+  int32 page_size = 2;
+  repeated Status status = 3;
+}
+
+message UpdateOrderRequest {
+  Order order = 1;
+}

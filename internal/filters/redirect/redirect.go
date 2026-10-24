@@ -86,6 +86,10 @@ func (f *Rewrite) OnRequest(c *pipeline.Context) pipeline.Responder {
 	p := u.Path
 	if f.cfg.StripPrefix != "" {
 		if rest, ok := strings.CutPrefix(p, f.cfg.StripPrefix); ok {
+			// A prefix ending in "/" consumes the separator; put it back.
+			if rest != "" && !strings.HasPrefix(rest, "/") {
+				rest = "/" + rest
+			}
 			p = joinPath(f.cfg.ReplacePrefix, rest)
 		}
 	}

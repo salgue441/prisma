@@ -52,6 +52,7 @@ type Cluster struct {
 	metrics   *telemetry.Metrics
 	resolver  Resolver
 	k8s       *k8sWatcher
+	consul    *consulWatcher
 
 	active   atomic.Int64
 	retrying atomic.Int64
@@ -89,6 +90,17 @@ func NewCluster(cfg config.Cluster, m *telemetry.Metrics) (*Cluster, error) {
 		switch d.Type {
 		case "dns":
 			c.DefaultHost = net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
+		case "consul":
+			w, err := newConsulWatcher(c)
+			if err != nil {
+				return nil, fmt.Errorf("cluster %s: %w", cfg.Name, err)
+			}
+			c.consul = w
+			// Consul DNS name, as clients of the service would use it.
+			c.DefaultHost = d.Consul.Service + ".service.consul"
+			if t.TLSClientConfig.ServerName == "" {
+				t.TLSClientConfig.ServerName = c.DefaultHost
+			}
 		case "kubernetes":
 			w, err := newK8sWatcher(c)
 			if err != nil {
@@ -241,6 +253,10 @@ func (c *Cluster) Start() {
 	switch {
 	case c.k8s != nil:
 		go c.k8s.run(ctx)
+	case c.consul != nil:
+		// Like DNS discovery, resolve once before serving.
+		index := c.consul.sync(ctx)
+		go c.consul.run(ctx, index)
 	case c.Config.Discovery != nil:
 		c.refresh(ctx)
 		go c.discoveryLoop(ctx)

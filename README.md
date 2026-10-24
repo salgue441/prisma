@@ -25,16 +25,22 @@ grpcurl -plaintext -H 'x-api-key: demo-key' 127.0.0.1:8080 grpc.health.v1.Health
 
 Validate a config without starting the gateway: `go run ./cmd/prisma -config path.yaml -validate`.
 
+[examples/](examples) has runnable walkthroughs, one per feature area,
+from a minimal config to the Gateway API on a kind cluster.
+
 ## Features
 
 | Area | Supported |
 |------|-----------|
 | Protocols | HTTP/1.1, HTTP/2 (TLS + ALPN), h2c, WebSocket upgrades, GraphQL (GET/POST/batch), gRPC unary and streaming with trailers passed through, gRPC-Web translated to native gRPC (binary and text) |
+| gRPC-JSON transcoding | gRPC services exposed as REST/JSON from their `google.api.http` annotations (path templates, query parameters, body mapping, `response_body`, additional bindings, custom verbs); server streaming as JSON arrays; gRPC errors mapped to HTTP statuses; optional call-by-name for unannotated methods |
+| TCP and TLS | `tcp` listeners (optionally terminating TLS) and `tls-passthrough` listeners routed by SNI without decryption; weighted backends, IP allow/deny, idle timeouts, half-close, TLS origination to upstreams |
 | Routing | Host (exact/wildcard), path (exact/regex/prefix), method, headers, gRPC service/method, per-listener routes, weighted backend splits |
 | Authentication | JWT (HS*, or RS/ES/EdDSA via JWKS with caching and key rotation), OAuth2 token introspection (RFC 7662, cached, with concurrent lookups merged), API keys (hashed in memory), HMAC request signing (with replay protection), mTLS; `any`/`all` modes |
 | Authorization | Required scopes per route, per HTTP method and per gRPC method; consumer allow-lists; IP allow/deny CIDRs; external authorization service (Envoy-compatible HTTP ext_authz, fail-open or fail-closed) |
 | Rate limiting | GCRA, local or Redis (one atomic Lua script); keys from IP, consumer, route, header, JWT claim, gRPC method or GraphQL operation; GraphQL cost-based limits; IETF `RateLimit-*` headers; falls back to local limits if Redis fails |
 | GraphQL guard | Limits on depth, aliases, root fields, cost and batch size; introspection blocking; persisted-query aware; validation against a schema; field-level authorization by `Type.field` (reject or strip the field) |
+| OpenAPI validation | Requests checked against an OpenAPI 3 document (path, method, parameters, headers, cookies, JSON bodies) and rejected with field-level errors; report-only mode for rollout; optional reporting of upstream responses that break the contract |
 | Masking | JSONPath-style selectors (`$..ssn`, `$.a[*].b`) and detectors (email, SSN, Luhn-checked cards); redact, partial, HMAC hash or drop; `unlessScope` bypass; fails closed by default; gRPC messages are masked too, frame by frame, using a descriptor set |
 | Redirects / rewrites | 301/302/303/307/308, HTTPS upgrade, prefix replacement, prefix stripping, regex path rewrite, host rewrite |
 | Browser support | CORS preflights answered at the gateway before auth, exact or wildcard-subdomain origins, CORS headers on gateway errors too |
@@ -42,13 +48,13 @@ Validate a config without starting the gateway: `go run ./cmd/prisma -config pat
 | Caching | Shared in-memory LRU for GET responses; follows Cache-Control, Age and Vary; separate entries per consumer unless shared; stores the final masked and compressed body; purge via the admin API |
 | Traffic mirroring | Sampled, fire-and-forget copies to a shadow cluster with a concurrency cap; never affects the client |
 | Load balancing | round_robin, weighted_round_robin (smooth), least_conn, p2c_ewma, ring_hash (IP, header or cookie) |
-| Service discovery | Static endpoints, DNS A/AAAA, DNS SRV, and Kubernetes EndpointSlices (watched, so readiness and terminating state apply immediately); endpoints that stay keep their health and latency state |
+| Service discovery | Static endpoints, DNS A/AAAA, DNS SRV, Kubernetes EndpointSlices (watched, so readiness and terminating state apply immediately), and Consul (blocking queries on service health, with tags, datacenters, tokens and weights); endpoints that stay keep their health and latency state |
 | Resilience | Active health checks (HTTP, gRPC, TCP), outlier ejection with backoff and a max-ejection cap, circuit breaker with half-open probing and concurrency cap, retries with backoff and a retry budget, timeouts |
 | Operations | Hot reload (file watch, SIGHUP, `POST /config/reload`), including listeners (swapped on the same socket while in-flight requests drain); invalid configs are rejected while the current one keeps serving. Prometheus metrics, JSON access logs with trace IDs, request IDs (UUIDv7), graceful drain, PROXY protocol v1/v2 from trusted load balancers |
-| Tracing | OpenTelemetry: a server span per request and a client span per upstream attempt (so retries are visible), W3C trace context propagation, OTLP/gRPC export, sampling that follows the caller's decision |
+| Tracing | OpenTelemetry: a server span per request and a client span per upstream attempt (so retries are visible), W3C trace context propagation, OTLP/gRPC export, sampling that follows the caller's decision; enabled, retargeted or disabled on reload |
 | Errors | One error model rendered as RFC 9457 problem+json for HTTP, the GraphQL error envelope for GraphQL, and Trailers-Only `grpc-status` for gRPC |
-| Plugins | Proxy-Wasm (ABI 0.2.x, the Envoy/Istio standard) on wazero: plugins built with the official Go, Rust or C++ SDKs run unmodified. Supports headers, bodies, local responses, HTTP callouts through gateway clusters, properties, shared data, metrics and timers. A crashing or looping plugin fails only its own request |
-| Kubernetes | Gateway API controller (Gateway, HTTPRoute, GRPCRoute, ReferenceGrant) with status reporting, plus a `PrismaPolicy` CRD that attaches any Prisma feature to Gateways or Routes |
+| Plugins | Proxy-Wasm (ABI 0.2.x, the Envoy/Istio standard) on wazero: plugins built with the official Go, Rust or C++ SDKs run unmodified. Supports headers, bodies, local responses, HTTP callouts through gateway clusters, properties, shared data, shared queues, metrics and timers. A crashing or looping plugin fails only its own request |
+| Kubernetes | Gateway API controller (Gateway, HTTPRoute, GRPCRoute, TLSRoute, TCPRoute, ReferenceGrant) with status reporting, plus a `PrismaPolicy` CRD that attaches any Prisma feature to Gateways or Routes |
 
 ## Admin API (`admin.address`, optionally `admin.token`)
 
@@ -69,6 +75,7 @@ Validate a config without starting the gateway: `go run ./cmd/prisma -config pat
 ```
 cmd/prisma            gateway entrypoint: reload, signals, graceful shutdown
 cmd/demo-upstream     sample REST, GraphQL and gRPC backends
+examples/             runnable walkthroughs (each config is checked by go test)
 internal/config       schema, ${env:}/${file:} secrets, defaults, validation
 internal/router       compiled host and path matching
 internal/pipeline     filter chain and per-request context
@@ -166,12 +173,13 @@ spec:
 
 Policies that target a Route override policies that target its Gateway.
 Invalid policies are rejected individually and reported in their status.
+[examples/14-kubernetes](examples/14-kubernetes) walks through both modes on
+a kind cluster.
 
 ## Not yet implemented
 
-- Gateway API: TLSRoute, TCPRoute, TLS passthrough, `allowedRoutes`
-  namespace selectors, and regex header matches. The upstream conformance
-  suite has not been run yet.
-- Proxy-Wasm: shared queues, gRPC callouts, and callouts from root contexts.
-- Consul discovery.
-- Applying tracing changes without a restart.
+- Gateway API: `allowedRoutes` namespace selectors and regex header
+  matches. Tested on kind, but the upstream conformance suite has not been
+  run yet.
+- Proxy-Wasm: gRPC callouts, callouts from root contexts, and shared queues
+  across plugins (queues are visible within one plugin).

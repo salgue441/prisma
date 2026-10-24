@@ -12,6 +12,8 @@ const (
 	KindGateway   = "Gateway"
 	KindHTTPRoute = "HTTPRoute"
 	KindGRPCRoute = "GRPCRoute"
+	KindTLSRoute  = "TLSRoute"
+	KindTCPRoute  = "TCPRoute"
 	KindService   = "Service"
 	KindSecret    = "Secret"
 )
@@ -221,4 +223,27 @@ func deref[T any](p *T, def T) T {
 		return def
 	}
 	return *p
+}
+
+// tlsRoute (v1alpha2) routes TLS connections by SNI; tcpRoute (v1alpha2)
+// forwards TCP connections. Both only have backendRefs in their rules.
+type tlsRoute struct {
+	Metadata objectMeta `json:"metadata"`
+	Spec     struct {
+		ParentRefs []parentRef `json:"parentRefs"`
+		Hostnames  []string    `json:"hostnames"`
+		Rules      []l4Rule    `json:"rules"`
+	} `json:"spec"`
+}
+
+type tcpRoute struct {
+	Metadata objectMeta `json:"metadata"`
+	Spec     struct {
+		ParentRefs []parentRef `json:"parentRefs"`
+		Rules      []l4Rule    `json:"rules"`
+	} `json:"spec"`
+}
+
+type l4Rule struct {
+	BackendRefs []backendRef `json:"backendRefs"`
 }

@@ -7,3 +7,9 @@
 *.test
 *.out
 coverage.*
+
+# Example build artifacts
+*.wasm
+examples/15-tcp-tls/tls.crt
+examples/15-tcp-tls/tls.key
+examples/17-grpc-transcoding/shop.binpb

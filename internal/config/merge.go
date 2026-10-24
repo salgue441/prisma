@@ -35,6 +35,9 @@ func (c *Config) EffectivePolicy(r *Route) Policy {
 		if p.Compression != nil {
 			out.Compression = p.Compression
 		}
+		if p.OpenAPI != nil {
+			out.OpenAPI = p.OpenAPI
+		}
 		out.RateLimit = append(out.RateLimit, p.RateLimit...)
 		for _, name := range p.Plugins {
 			if !slices.Contains(out.Plugins, name) {

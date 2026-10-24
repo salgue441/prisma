@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"prisma/internal/admin"
 	"prisma/internal/config"
@@ -63,20 +64,11 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 	access := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	gw := gateway.New(metrics, access)
 	defer gw.Close()
-	if cfg.Tracing != nil {
-		tp, err := telemetry.NewTracerProvider(context.Background(), cfg.Tracing, version)
-		if err != nil {
-			return fmt.Errorf("tracing: %w", err)
-		}
-		gw.SetTracerProvider(tp)
-		defer func() {
-			// Flush buffered spans before exiting.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = tp.Shutdown(ctx)
-		}()
-		slog.Info("tracing enabled", "endpoint", cfg.Tracing.Endpoint, "sampleRatio", cfg.Tracing.SampleRatio)
+	tr := &tracing{gw: gw}
+	if err := tr.apply(cfg.Tracing); err != nil {
+		return fmt.Errorf("tracing: %w", err)
 	}
+	defer tr.close()
 	if err := gw.Apply(cfg, cfgVersion); err != nil {
 		return err
 	}
@@ -116,8 +108,9 @@ func run(path string, cfg *config.Config, cfgVersion string, watch bool) error {
 		if v == current {
 			return nil
 		}
-		if !reflect.DeepEqual(next.Tracing, gw.Snapshot().Config.Tracing) {
-			slog.Warn("tracing changes require a restart")
+		if err := tr.apply(next.Tracing); err != nil {
+			// Routes still reload; tracing keeps its previous settings.
+			slog.Error("tracing reload failed; keeping current tracing", "err", err)
 		}
 		if controller != nil {
 			// The controller merges the new base with cluster resources.
@@ -230,4 +223,60 @@ func watchFile(ctx context.Context, path string, onChange func()) {
 			slog.Warn("config watch error", "err", err)
 		}
 	}
+}
+
+// tracing owns the OpenTelemetry provider and replaces it when the tracing
+// configuration changes, so reloads can enable, retarget or disable
+// tracing without a restart.
+type tracing struct {
+	gw  *gateway.Gateway
+	cfg *config.Tracing
+	tp  *sdktrace.TracerProvider
+}
+
+func (t *tracing) apply(cfg *config.Tracing) error {
+	if reflect.DeepEqual(cfg, t.cfg) {
+		return nil
+	}
+	var tp *sdktrace.TracerProvider
+	if cfg != nil {
+		var err error
+		if tp, err = telemetry.NewTracerProvider(context.Background(), cfg, version); err != nil {
+			return err
+		}
+		slog.Info("tracing enabled", "endpoint", cfg.Endpoint, "sampleRatio", cfg.SampleRatio)
+	} else if t.cfg != nil {
+		slog.Info("tracing disabled")
+	}
+	if tp != nil {
+		t.gw.SetTracerProvider(tp)
+	} else {
+		t.gw.SetTracerProvider(nil) // untyped nil: a nil *TracerProvider is not a nil interface
+	}
+	old := t.tp
+	t.tp, t.cfg = tp, cfg
+	if old != nil {
+		// Spans of requests still in flight end on the old provider; give
+		// them time, then flush it.
+		go func() {
+			time.Sleep(drainGrace)
+			flush(old)
+		}()
+	}
+	return nil
+}
+
+// close flushes buffered spans before exiting.
+func (t *tracing) close() {
+	if t.tp != nil {
+		flush(t.tp)
+	}
+}
+
+const drainGrace = 30 * time.Second
+
+func flush(tp *sdktrace.TracerProvider) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = tp.Shutdown(ctx)
 }

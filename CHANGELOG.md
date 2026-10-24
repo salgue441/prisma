@@ -4,6 +4,65 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-10-24
+
+### Added
+- **TCP and TLS proxying**: listeners with `type: tcp` (optionally
+  terminating TLS) or `type: tls-passthrough` (routed by SNI without
+  decrypting) proxy connections to `type: tcp` routes. Clusters keep their
+  balancing, health checks, outlier ejection, breakers and discovery; routes
+  support weighted backends, IP allow/deny and idle timeouts. Half-close is
+  propagated, PROXY protocol works on these listeners, and clusters with
+  `tls` re-encrypt to the upstream. New metrics: `prisma_tcp_connections_total`,
+  `prisma_tcp_active_connections`, `prisma_tcp_bytes_total`.
+- **Gateway API TLSRoute and TCPRoute** (v1alpha2, experimental channel):
+  TLS listeners in Passthrough or Terminate mode and TCP listeners.
+- **OpenAPI request validation** (`openapi` on routes and policies): requests
+  are checked against an OpenAPI 3 document and rejected with a 400 listing
+  each problem (`in`, `field`, `message`), or 404/405 for undefined
+  operations. `mode: report` only logs and counts; `responses: report`
+  validates upstream JSON responses without blocking them. Gateway errors can
+  now carry an `errors` member in their problem document.
+- **gRPC-JSON transcoding** (`grpcTranscode` on routes): REST/JSON requests
+  are mapped to gRPC calls through the `google.api.http` annotations in a
+  descriptor set, including nested path variables, `**` and custom verbs,
+  query parameters, `body` and `response_body`, and additional bindings.
+  Server-streaming methods return JSON arrays as messages arrive; gRPC
+  errors become HTTP statuses with a problem document. `autoMapping` calls
+  unannotated methods as `POST /package.Service/Method`. Other filters,
+  masking included, see the JSON side.
+- **Consul service discovery** (`discovery: {type: consul}`): healthy
+  instances of a service, followed with blocking queries so health changes
+  apply within moments. Supports tags, datacenters, namespaces and
+  partitions, ACL tokens (redacted on the admin API), `allowWarning`, and
+  instance weights. Consul outages keep the last known endpoints.
+- **Proxy-Wasm shared queues**: register, resolve, enqueue and dequeue,
+  with `proxy_on_queue_ready` delivered to a root context of the plugin.
+- **Tracing changes apply on reload**: the `tracing` block can be added,
+  changed or removed without a restart; spans of in-flight requests end on
+  the previous exporter, which is flushed afterwards.
+- The demo upstream serves an annotated `shop.v1.Orders` gRPC service on
+  `:9004` and can write its descriptor set (`-write-descriptors`).
+- `examples/`: runnable walkthroughs with expected output, from a
+  minimal config to the Gateway API on kind. `go test ./examples/` checks
+  that every example config loads and compiles.
+- The demo upstream takes `-name` and per-backend address flags (to run
+  several instances), and has `/echo`, `/slow`, `/flaky`, `/products`
+  (cacheable) and `/admin/health` endpoints for the examples.
+
+### Fixed
+- The container image ran as the named user `nonroot`, which Kubernetes
+  `runAsNonRoot` cannot verify, so pods failed with CreateContainerConfigError.
+  It now runs as UID 65532.
+- The Gateway API Deployment relied on `NET_BIND_SERVICE` to bind port 80,
+  which a non-root process does not get; it now sets
+  `net.ipv4.ip_unprivileged_port_start=0` instead.
+- `deploy/kubernetes/gateway-api.yaml` could not be applied in one step: its
+  example PrismaPolicy was created before the CRD was established. The
+  examples moved to `examples/14-kubernetes`.
+- `rewrite: {stripPrefix: /, replacePrefix: /x/}` dropped the path separator
+  (`/hello` became `/xhello`).
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

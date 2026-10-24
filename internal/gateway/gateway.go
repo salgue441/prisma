@@ -31,9 +31,11 @@ import (
 const drainGrace = 60 * time.Second
 
 type Snapshot struct {
-	Version  string
-	Config   *config.Config
-	Router   *router.Router
+	Version string
+	Config  *config.Config
+	Router  *router.Router
+	// Streams holds the tcp routes of each tcp or tls-passthrough listener.
+	Streams  map[string]*streamTable
 	Clusters map[string]*upstream.Cluster
 	Plugins  map[string]*loadedPlugin
 	LoadedAt time.Time
@@ -56,8 +58,7 @@ type Gateway struct {
 	jwks    *authn.Registry
 	local   *ratelimit.LocalStore
 	cache   *cache.Store
-	tracer  trace.Tracer
-	tracing bool
+	tracer  atomic.Pointer[tracerState]
 
 	wasmCache wazero.CompilationCache
 	plugins   map[string]*loadedPlugin // guarded by mu
@@ -75,21 +76,35 @@ func New(m *telemetry.Metrics, accessLog *slog.Logger) *Gateway {
 	if accessLog == nil {
 		accessLog = slog.New(slog.DiscardHandler)
 	}
-	return &Gateway{
+	g := &Gateway{
 		metrics: m, access: accessLog, jwks: authn.NewRegistry(), local: ratelimit.NewLocalStore(),
 		cache:     cache.NewStore(64 << 20),
-		tracer:    noop.NewTracerProvider().Tracer(""),
 		wasmCache: wazero.NewCompilationCache(),
 		plugins:   map[string]*loadedPlugin{},
 	}
+	g.tracer.Store(noTracing)
+	return g
 }
 
-// SetTracerProvider enables tracing. Call it before serving traffic. Inbound
-// trace context is only trusted (extracted) once tracing is enabled;
-// otherwise trace headers pass through to upstreams untouched.
+// tracerState is swapped as a unit so a request sees a consistent pair.
+type tracerState struct {
+	tracer  trace.Tracer
+	enabled bool
+}
+
+var noTracing = &tracerState{tracer: noop.NewTracerProvider().Tracer("")}
+
+// SetTracerProvider enables tracing, switches providers, or with nil turns
+// tracing off; it is safe while serving, and requests already in flight
+// finish with the provider they started with. Inbound trace context is
+// only trusted (extracted) while tracing is enabled; otherwise trace
+// headers pass through to upstreams untouched.
 func (g *Gateway) SetTracerProvider(tp trace.TracerProvider) {
-	g.tracer = tp.Tracer("prisma")
-	g.tracing = true
+	if tp == nil {
+		g.tracer.Store(noTracing)
+		return
+	}
+	g.tracer.Store(&tracerState{tracer: tp.Tracer("prisma"), enabled: true})
 }
 
 func (g *Gateway) Metrics() *telemetry.Metrics { return g.metrics }
@@ -210,6 +225,9 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 	routes := make([]*router.Route, 0, len(cfg.Routes))
 	for i := range cfg.Routes {
 		rcfg := &cfg.Routes[i]
+		if rcfg.Type == config.RouteTCP {
+			continue
+		}
 		h, err := deps.buildRoute(rcfg)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("route %s: %w", rcfg.Name, err))
@@ -222,10 +240,13 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 		}
 		routes = append(routes, r)
 	}
+	streams, err := buildStreams(cfg, snap.Clusters)
+	errs = append(errs, err)
 	if err := errors.Join(errs...); err != nil {
 		return nil, created, err
 	}
 	snap.Router = router.New(routes)
+	snap.Streams = streams
 	ok = true
 	return snap, created, nil
 }

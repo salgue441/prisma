@@ -10,6 +10,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}"
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/prisma /prisma
 COPY configs/prisma.yaml /etc/prisma/prisma.yaml
-USER nonroot:nonroot
+# Numeric so Kubernetes runAsNonRoot can verify it (65532 is distroless "nonroot").
+USER 65532:65532
 EXPOSE 8080 9901
 ENTRYPOINT ["/prisma", "-config", "/etc/prisma/prisma.yaml"]

@@ -1,0 +1,137 @@
+# A demo application exposed through Prisma with the Gateway API:
+# REST and gRPC backends, an HTTPRoute with a canary split, a GRPCRoute,
+# and Prisma features attached with PrismaPolicy.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: orders, track: stable}
+  template:
+    metadata:
+      labels: {app: orders, track: stable}
+    spec:
+      containers:
+        - name: demo
+          image: prisma-demo:dev
+          args: ["-name", "stable"]
+          ports:
+            - {name: http, containerPort: 9001}
+            - {name: grpc, containerPort: 9003}
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  selector: {app: orders, track: stable}
+  ports:
+    - {name: http, port: 80, targetPort: http}
+    - {name: grpc, port: 9003, targetPort: grpc, appProtocol: kubernetes.io/h2c}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-canary
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orders, track: canary}
+  template:
+    metadata:
+      labels: {app: orders, track: canary}
+    spec:
+      containers:
+        - name: demo
+          image: prisma-demo:dev
+          args: ["-name", "canary", "-graphql", "", "-grpc", ""]
+          ports: [{name: http, containerPort: 9001}]
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-canary
+  namespace: shop
+spec:
+  selector: {app: orders, track: canary}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+# /shop/orders/* -> the orders services, 80/20 between stable and canary.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  parentRefs: [{name: public, namespace: gateway}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /shop/orders}}]
+      filters:
+        - type: URLRewrite
+          urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /orders}}
+        - type: ResponseHeaderModifier
+          responseHeaderModifier: {remove: [Server]}
+      backendRefs:
+        - {name: orders, port: 80, weight: 80}
+        - {name: orders-canary, port: 80, weight: 20}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: health
+  namespace: shop
+spec:
+  parentRefs: [{name: public, namespace: gateway}]
+  rules:
+    - matches:
+        - method: {service: grpc.health.v1.Health}
+        # Server reflection, so grpcurl works without .proto files.
+        - method: {service: grpc.reflection.v1.ServerReflection}
+        - method: {service: grpc.reflection.v1alpha.ServerReflection}
+      backendRefs: [{name: orders, port: 9003}]
+---
+# The Gateway: Prisma listens on port 80 for routes from any namespace.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: public
+  namespace: gateway
+spec:
+  gatewayClassName: prisma
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces: {from: All}
+---
+# Prisma features the Gateway API has no fields for.
+apiVersion: prisma.dev/v1alpha1
+kind: PrismaPolicy
+metadata:
+  name: orders-protection
+  namespace: shop
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: orders}
+  rateLimit:
+    - {key: [client_ip], limit: 10, period: 1s, burst: 20}
+  masking:
+    rules:
+      - {selector: "$..ssn", strategy: redact}
+      - {selector: "$..cardNumber", strategy: partial, keepLast: 4}
+  compression: {}

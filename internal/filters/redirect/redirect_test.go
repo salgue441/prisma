@@ -16,6 +16,9 @@ func TestRewritePrefix(t *testing.T) {
 		{"/foo", "/v2/", "/foo/bar", "/v2/bar"},
 		{"/foo", "", "/foo/bar", "/bar"},
 		{"/api/v1", "", "/api/v1/orders/42", "/orders/42"},
+		{"/", "/echo/", "/hello", "/echo/hello"},
+		{"/", "/echo", "/a/b", "/echo/a/b"},
+		{"/api/", "/v2", "/api/x", "/v2/x"},
 	}
 	for _, tc := range cases {
 		r := httptest.NewRequest("GET", "http://x"+tc.in, nil)

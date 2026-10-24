@@ -47,10 +47,13 @@ var resources = map[string]struct {
 	query    url.Values
 	optional bool
 }{
-	"GatewayClass":   {path: "/apis/gateway.networking.k8s.io/v1/gatewayclasses", optional: true},
-	"Gateway":        {path: "/apis/gateway.networking.k8s.io/v1/gateways", optional: true},
-	"HTTPRoute":      {path: "/apis/gateway.networking.k8s.io/v1/httproutes", optional: true},
-	"GRPCRoute":      {path: "/apis/gateway.networking.k8s.io/v1/grpcroutes", optional: true},
+	"GatewayClass": {path: "/apis/gateway.networking.k8s.io/v1/gatewayclasses", optional: true},
+	"Gateway":      {path: "/apis/gateway.networking.k8s.io/v1/gateways", optional: true},
+	"HTTPRoute":    {path: "/apis/gateway.networking.k8s.io/v1/httproutes", optional: true},
+	"GRPCRoute":    {path: "/apis/gateway.networking.k8s.io/v1/grpcroutes", optional: true},
+	// Experimental channel: absent on clusters with only the standard CRDs.
+	"TLSRoute":       {path: "/apis/gateway.networking.k8s.io/v1alpha2/tlsroutes", optional: true},
+	"TCPRoute":       {path: "/apis/gateway.networking.k8s.io/v1alpha2/tcproutes", optional: true},
 	"ReferenceGrant": {path: "/apis/gateway.networking.k8s.io/v1beta1/referencegrants", optional: true},
 	"PrismaPolicy":   {path: "/apis/prisma.dev/v1alpha1/prismapolicies", optional: true},
 	"Service":        {path: "/api/v1/services"},
@@ -131,6 +134,7 @@ func (c *Controller) reconcile(ctx context.Context) {
 		Discovery:      config.KubernetesDiscovery{APIServer: c.cfg.APIServer, TokenFile: c.cfg.TokenFile, CAFile: c.cfg.CAFile},
 		GatewayClasses: c.snapshot("GatewayClass"), Gateways: c.snapshot("Gateway"),
 		HTTPRoutes: c.snapshot("HTTPRoute"), GRPCRoutes: c.snapshot("GRPCRoute"),
+		TLSRoutes: c.snapshot("TLSRoute"), TCPRoutes: c.snapshot("TCPRoute"),
 		ReferenceGrants: c.snapshot("ReferenceGrant"), Services: c.snapshot("Service"),
 		Secrets: c.snapshot("Secret"), Policies: c.snapshot("PrismaPolicy"),
 	})
@@ -261,7 +265,8 @@ func (c *Controller) writeStatus(ctx context.Context, st Status) {
 		c.patch(ctx, fmt.Sprintf("/apis/gateway.networking.k8s.io/v1/namespaces/%s/gateways/%s", url.PathEscape(gs.Namespace), url.PathEscape(gs.Name)), o.Raw, want)
 	}
 
-	routes := map[string]map[string]k8s.Object{KindHTTPRoute: c.snapshot("HTTPRoute"), KindGRPCRoute: c.snapshot("GRPCRoute")}
+	routes := map[string]map[string]k8s.Object{KindHTTPRoute: c.snapshot("HTTPRoute"), KindGRPCRoute: c.snapshot("GRPCRoute"),
+		KindTLSRoute: c.snapshot("TLSRoute"), KindTCPRoute: c.snapshot("TCPRoute")}
 	for _, rs := range st.Routes {
 		o, ok := routes[rs.Kind][rs.Namespace+"/"+rs.Name]
 		if !ok {
@@ -297,8 +302,9 @@ func (c *Controller) writeStatus(ctx context.Context, st Status) {
 				"conditions": conditions(ps.Conditions, ours[parentKey(ps.Ref)], rs.Generation),
 			})
 		}
-		plural := map[string]string{KindHTTPRoute: "httproutes", KindGRPCRoute: "grpcroutes"}[rs.Kind]
-		c.patch(ctx, fmt.Sprintf("/apis/gateway.networking.k8s.io/v1/namespaces/%s/%s/%s", url.PathEscape(rs.Namespace), plural, url.PathEscape(rs.Name)),
+		path := map[string]string{KindHTTPRoute: "v1/namespaces/%s/httproutes/%s", KindGRPCRoute: "v1/namespaces/%s/grpcroutes/%s",
+			KindTLSRoute: "v1alpha2/namespaces/%s/tlsroutes/%s", KindTCPRoute: "v1alpha2/namespaces/%s/tcproutes/%s"}[rs.Kind]
+		c.patch(ctx, "/apis/gateway.networking.k8s.io/"+fmt.Sprintf(path, url.PathEscape(rs.Namespace), url.PathEscape(rs.Name)),
 			o.Raw, map[string]any{"parents": parents})
 	}
 

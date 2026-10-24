@@ -1,0 +1,72 @@
+openapi: 3.0.3
+info:
+  title: Orders API
+  version: "1.0"
+servers:
+  - url: https://shop.example.com/api
+paths:
+  /orders/{id}:
+    get:
+      summary: Get an order
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, pattern: "^[0-9]+$"}
+        - name: expand
+          in: query
+          schema: {type: string, enum: [items, customer]}
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Order"}
+  /orders:
+    post:
+      summary: Create an order
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 8}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NewOrder"}
+      responses:
+        "201":
+          description: Created
+  /products:
+    get:
+      summary: List products
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 50}
+      responses:
+        "200":
+          description: Products
+components:
+  schemas:
+    NewOrder:
+      type: object
+      additionalProperties: false
+      required: [item, qty]
+      properties:
+        item: {type: string, minLength: 1, maxLength: 100}
+        qty: {type: integer, minimum: 1, maximum: 100}
+        note: {type: string, maxLength: 500}
+    Order:
+      type: object
+      required: [id, customer]
+      properties:
+        id: {type: string}
+        instance: {type: string}
+        customer:
+          type: object
+          required: [name, email]
+          properties:
+            name: {type: string}
+            email: {type: string, format: email}

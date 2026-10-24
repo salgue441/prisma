@@ -1,0 +1,47 @@
+# Response masking: hide personal data in upstream responses before it
+# leaves the gateway, unless the caller is allowed to see it.
+#   export PRISMA_MASK_HASH_KEY=change-me
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/07-masking/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "localhost:9001"}]
+
+consumers:
+  - name: support-agent
+    apiKeys: [support-key]
+    scopes: [orders:read]
+  - name: compliance
+    apiKeys: [compliance-key]
+    scopes: [orders:read, pii:read]
+
+policies:
+  pii:
+    masking:
+      rules:
+        # Selectors address fields by path; $.. searches at any depth.
+        - {selector: "$..ssn", strategy: redact}                     # "***"
+        - {selector: "$..cardNumber", strategy: partial, keepLast: 4} # "************1111"
+        - {selector: "$.requestId", strategy: drop}                  # removed
+        # Detectors find values by content, wherever they are.
+        - {detector: email, strategy: hash}                          # stable keyed hash
+      hashKey: "${env:PRISMA_MASK_HASH_KEY}"
+      unlessScope: pii:read       # callers with this scope see raw data
+      onFailure: closed           # unparseable bodies are blocked, not leaked
+
+routes:
+  - name: orders
+    match: {pathPrefix: /orders}
+    authn: {apiKey: {header: X-API-Key}}
+    use: [pii]
+    backends: [{cluster: orders}]

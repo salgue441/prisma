@@ -76,7 +76,7 @@ type Plugin struct {
 	FailOpen bool `yaml:"failOpen" json:"failOpen"`
 }
 
-// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes need a restart.
+// Tracing exports OpenTelemetry spans over OTLP/gRPC. Changes apply on reload.
 type Tracing struct {
 	Endpoint    string            `yaml:"endpoint" json:"endpoint"` // host:port of an OTLP/gRPC collector
 	Insecure    bool              `yaml:"insecure" json:"insecure"`
@@ -86,8 +86,12 @@ type Tracing struct {
 }
 
 type Listener struct {
-	Name                 string         `yaml:"name" json:"name"`
-	Address              string         `yaml:"address" json:"address"`
+	Name    string `yaml:"name" json:"name"`
+	Address string `yaml:"address" json:"address"`
+	// Type: http (default) | tcp | tls-passthrough. tcp proxies raw TCP
+	// connections to tcp routes, terminating TLS first when tls is set;
+	// tls-passthrough routes TLS connections by SNI without decrypting them.
+	Type                 string         `yaml:"type,omitempty" json:"type,omitempty"`
 	Protocols            []string       `yaml:"protocols" json:"protocols"` // http1, http2, h2c
 	TLS                  *ListenerTLS   `yaml:"tls,omitempty" json:"tls,omitempty"`
 	ReadHeaderTimeout    time.Duration  `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
@@ -167,6 +171,27 @@ type Discovery struct {
 	Interval time.Duration `yaml:"interval" json:"interval"`
 	// Kubernetes watches the EndpointSlices of a Service (type kubernetes).
 	Kubernetes *KubernetesDiscovery `yaml:"kubernetes,omitempty" json:"kubernetes,omitempty"`
+	// Consul watches a service's healthy instances (type consul).
+	Consul *ConsulDiscovery `yaml:"consul,omitempty" json:"consul,omitempty"`
+}
+
+// ConsulDiscovery follows a Consul service's instances with blocking
+// queries on /v1/health/service, so changes apply within moments.
+type ConsulDiscovery struct {
+	// Address of the Consul HTTP API (default http://127.0.0.1:8500).
+	Address string `yaml:"address,omitempty" json:"address,omitempty"`
+	Service string `yaml:"service" json:"service"`
+	// Tag keeps only instances with this tag.
+	Tag        string `yaml:"tag,omitempty" json:"tag,omitempty"`
+	Datacenter string `yaml:"datacenter,omitempty" json:"datacenter,omitempty"`
+	// Namespace and Partition are Consul Enterprise features.
+	Namespace string `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	Partition string `yaml:"partition,omitempty" json:"partition,omitempty"`
+	Token     string `yaml:"token,omitempty" json:"token,omitempty"`
+	// AllowWarning also routes to instances whose checks are in warning.
+	AllowWarning bool `yaml:"allowWarning" json:"allowWarning"`
+	// CAFile verifies an https Consul address.
+	CAFile string `yaml:"caFile,omitempty" json:"caFile,omitempty"`
 }
 
 // KubernetesDiscovery defaults to in-cluster access with the pod's service
@@ -233,8 +258,31 @@ type Policy struct {
 	CORS        *CORS        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Compression *Compression `yaml:"compression,omitempty" json:"compression,omitempty"`
 	Cache       *Cache       `yaml:"cache,omitempty" json:"cache,omitempty"`
+	OpenAPI     *OpenAPI     `yaml:"openapi,omitempty" json:"openapi,omitempty"`
 	// Plugins run in order; they accumulate across global, policy and route.
 	Plugins []string `yaml:"plugins,omitempty" json:"plugins,omitempty"`
+}
+
+// OpenAPI validates requests (path, query, headers, cookies and body)
+// against an OpenAPI 3 document before they reach the upstream.
+type OpenAPI struct {
+	// Spec is an inline document (YAML or JSON); SpecFile a path to one.
+	Spec     string `yaml:"spec,omitempty" json:"spec,omitempty"`
+	SpecFile string `yaml:"specFile,omitempty" json:"specFile,omitempty"`
+	// BasePath is the part of request paths before the document's paths,
+	// e.g. /api/v1 when clients call /api/v1/orders for the path /orders.
+	// Default: the path of the document's first server URL.
+	BasePath string `yaml:"basePath,omitempty" json:"basePath,omitempty"`
+	// Mode: enforce (default) rejects invalid requests with 400; report
+	// only logs and counts them.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// UnknownOperations: reject (default) answers 404/405 for paths and
+	// methods the document does not define; allow forwards them unchecked.
+	UnknownOperations string `yaml:"unknownOperations,omitempty" json:"unknownOperations,omitempty"`
+	// Responses: off (default) | report. report validates upstream JSON
+	// responses and logs mismatches; responses are never blocked.
+	Responses    string   `yaml:"responses,omitempty" json:"responses,omitempty"`
+	MaxBodyBytes ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 }
 
 // Cache stores GET responses in the gateway's shared in-memory cache,
@@ -431,8 +479,11 @@ type FieldAuthz struct {
 }
 
 type Route struct {
-	Name      string   `yaml:"name" json:"name"`
-	Type      string   `yaml:"type,omitempty" json:"type,omitempty"` // http | graphql | grpc
+	Name string `yaml:"name" json:"name"`
+	// Type: http (default) | graphql | grpc | tcp. tcp routes attach to tcp
+	// and tls-passthrough listeners; they match on SNI (match.hosts) and
+	// support backends, authz IP lists and timeout (the idle timeout).
+	Type      string   `yaml:"type,omitempty" json:"type,omitempty"`
 	Listeners []string `yaml:"listeners,omitempty" json:"listeners,omitempty"`
 	Priority  int      `yaml:"priority" json:"priority"`
 	Match     Match    `yaml:"match" json:"match"`
@@ -446,11 +497,13 @@ type Route struct {
 	Rewrite        *Rewrite        `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
 	Retries        *Retries        `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
-	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
-	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
-	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
-	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
+	GRPCWeb bool `yaml:"grpcWeb" json:"grpcWeb"`
+	// GRPCTranscode serves gRPC backends as a JSON/HTTP API.
+	GRPCTranscode *GRPCTranscode `yaml:"grpcTranscode,omitempty" json:"grpcTranscode,omitempty"`
+	Mirror        *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
+	Timeout       *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	MaxBodyBytes  ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	Backends      []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
 }
 
 type Match struct {
@@ -492,6 +545,29 @@ type Retries struct {
 	AllowNonIdempotent bool          `yaml:"allowNonIdempotent" json:"allowNonIdempotent"`
 }
 
+// GRPCTranscode maps JSON/HTTP requests to gRPC calls using the
+// google.api.http annotations in a descriptor set (protoc
+// --include_imports --descriptor_set_out=...), and gRPC responses back to
+// JSON. Unary and server-streaming methods are supported.
+type GRPCTranscode struct {
+	DescriptorSet string `yaml:"descriptorSet" json:"descriptorSet"`
+	// Services limits transcoding to these fully qualified services
+	// (default: every service in the set).
+	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
+	// AutoMapping also accepts POST /package.Service/Method with a JSON body
+	// for methods that have no http annotation.
+	AutoMapping bool `yaml:"autoMapping" json:"autoMapping"`
+	// EmitUnpopulated includes zero-valued fields in responses.
+	EmitUnpopulated bool `yaml:"emitUnpopulated" json:"emitUnpopulated"`
+	// UseProtoNames writes field names as in the .proto file instead of
+	// lowerCamelCase.
+	UseProtoNames bool `yaml:"useProtoNames" json:"useProtoNames"`
+	// DiscardUnknown ignores unknown JSON fields and query parameters
+	// instead of rejecting the request.
+	DiscardUnknown bool     `yaml:"discardUnknown" json:"discardUnknown"`
+	MaxBodyBytes   ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+}
+
 // Mirror copies a sample of a route's traffic to a shadow cluster. Shadow
 // responses are discarded; the Host header gets a "-shadow" suffix.
 type Mirror struct {
@@ -507,3 +583,19 @@ type Backend struct {
 	Cluster string `yaml:"cluster" json:"cluster"`
 	Weight  int    `yaml:"weight" json:"weight"`
 }
+
+// Listener types.
+const (
+	ListenerHTTP           = "http"
+	ListenerTCP            = "tcp"
+	ListenerTLSPassthrough = "tls-passthrough"
+)
+
+// IsStream reports whether the listener proxies connections (tcp,
+// tls-passthrough) rather than HTTP requests.
+func (l *Listener) IsStream() bool {
+	return l.Type == ListenerTCP || l.Type == ListenerTLSPassthrough
+}
+
+// RouteTCP is the route type for connection-level (L4) routes.
+const RouteTCP = "tcp"

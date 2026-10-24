@@ -319,8 +319,56 @@ func (p *Plugin) registerHost(ctx context.Context) error {
 			}
 		}
 	}
-	unimplemented("proxy_register_shared_queue", "proxy_resolve_shared_queue", "proxy_dequeue_shared_queue",
-		"proxy_enqueue_shared_queue", "proxy_call_foreign_function")
+	unimplemented("proxy_call_foreign_function")
+
+	// Shared queues. Queues are plugin-wide; vm_id may be empty or the
+	// plugin's own name (queues of other plugins are not visible).
+	fn("proxy_register_shared_queue", func(ctx context.Context, m api.Module, namePtr, nameSize, idPtr uint32) uint32 {
+		name, ok := readString(m, namePtr, nameSize)
+		if !ok {
+			return statusBadArgument
+		}
+		m.Memory().WriteUint32Le(idPtr, p.queues.register(name, instFrom(ctx)))
+		return statusOK
+	})
+	fn("proxy_resolve_shared_queue", func(_ context.Context, m api.Module, vmPtr, vmSize, namePtr, nameSize, idPtr uint32) uint32 {
+		vm, ok1 := readString(m, vmPtr, vmSize)
+		name, ok2 := readString(m, namePtr, nameSize)
+		if !ok1 || !ok2 {
+			return statusBadArgument
+		}
+		if vm != "" && vm != p.cfg.Name {
+			return statusNotFound
+		}
+		id, found := p.queues.resolve(name)
+		if !found {
+			return statusNotFound
+		}
+		m.Memory().WriteUint32Le(idPtr, id)
+		return statusOK
+	})
+	fn("proxy_enqueue_shared_queue", func(_ context.Context, m api.Module, id, valPtr, valSize uint32) uint32 {
+		val, ok := read(m, valPtr, valSize)
+		if !ok {
+			return statusBadArgument
+		}
+		st, owner := p.queues.enqueue(id, val)
+		if owner != nil {
+			// Asynchronous: the owner may be the instance running right now.
+			select {
+			case owner.ready <- id:
+			default: // notifications pending; the item is picked up with them
+			}
+		}
+		return st
+	})
+	fn("proxy_dequeue_shared_queue", func(ctx context.Context, m api.Module, id, ptrPtr, sizePtr uint32) uint32 {
+		v, st := p.queues.dequeue(id)
+		if st != statusOK {
+			return st
+		}
+		return instFrom(ctx).returnBytes(ctx, m, v, ptrPtr, sizePtr)
+	})
 
 	// Metrics.
 	fn("proxy_define_metric", func(_ context.Context, m api.Module, _, namePtr, nameSize, idPtr uint32) uint32 {

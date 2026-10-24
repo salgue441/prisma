@@ -1,0 +1,60 @@
+# gRPC: routing by service and method, per-method authorization, gRPC-Web
+# for browsers, and gRPC-aware load balancing and health checks.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/09-grpc/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    # h2c: HTTP/2 without TLS, which plaintext gRPC clients need. With TLS,
+    # list http2 and configure tls; ALPN negotiates it.
+    protocols: [http1, h2c]
+
+clusters:
+  - name: inventory
+    protocol: h2c
+    endpoints: [{address: "localhost:9003"}]
+    loadBalancer: {policy: p2c_ewma}
+    healthCheck: {type: grpc, service: inventory.v1.Inventory, interval: 5s}
+
+consumers:
+  - name: dashboard
+    apiKeys: [dashboard-key]
+    scopes: [health:read]
+  - name: ops
+    apiKeys: [ops-key]
+    scopes: [health:read, health:watch]
+
+routes:
+  # The health service, with an extra scope for the streaming Watch method.
+  - name: health
+    type: grpc
+    match: {grpcService: grpc.health.v1.Health}
+    authn: {apiKey: {header: X-API-Key}}
+    authz:
+      scopes: [health:read]
+      methods: {/grpc.health.v1.Health/Watch: [health:watch]}
+    rateLimit:
+      - {name: per-method, key: [consumer, grpc_method], limit: 10, period: 1s}
+    retries: {attempts: 2, on: [unavailable]}
+    grpcWeb: true       # browsers can call it with gRPC-Web
+    cors:
+      allowOrigins: ["http://localhost:3000"]
+      allowHeaders: [content-type, x-api-key, x-grpc-web, x-user-agent]
+      exposeHeaders: [grpc-status, grpc-message]
+    backends: [{cluster: inventory}]
+
+  # Server reflection, so grpcurl works without .proto files. Keep it on an
+  # internal listener in production.
+  - name: reflection
+    type: grpc
+    match: {grpcService: grpc.reflection.v1.ServerReflection}
+    backends: [{cluster: inventory}]
+  - name: reflection-v1alpha
+    type: grpc
+    match: {grpcService: grpc.reflection.v1alpha.ServerReflection}
+    backends: [{cluster: inventory}]

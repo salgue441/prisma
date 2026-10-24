@@ -1,0 +1,28 @@
+# The smallest useful gateway: one listener, one upstream, two routes.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/01-quickstart/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "localhost:9001"}]
+    healthCheck: {type: http, path: /health, interval: 5s}
+
+routes:
+  # /api/orders/42 reaches the upstream as /orders/42.
+  - name: orders
+    match: {pathPrefix: /api/orders}
+    rewrite: {stripPrefix: /api}
+    backends: [{cluster: orders}]
+
+  - name: health
+    match: {path: /health, methods: [GET]}
+    backends: [{cluster: orders}]
