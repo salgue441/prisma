@@ -44,6 +44,11 @@ func (p *plugin) OnPluginStart(int) types.OnPluginStartStatus {
 	}
 	p.tag = cfg.Tag
 	p.requests = proxywasm.DefineCounterMetric("plugin_requests")
+	// Seed the counter: a write with CAS 0 is unconditional (Proxy-Wasm ABI),
+	// so two streams creating the key at once would lose an increment.
+	if _, _, err := proxywasm.GetSharedData("hits"); err != nil {
+		_ = proxywasm.SetSharedData("hits", make([]byte, 8), 0)
+	}
 	return types.OnPluginStartStatusOK
 }
 
