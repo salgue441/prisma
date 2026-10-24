@@ -14,6 +14,7 @@ import (
 	"prisma/internal/filters/authz"
 	"prisma/internal/filters/compression"
 	"prisma/internal/filters/cors"
+	"prisma/internal/filters/extauthz"
 	"prisma/internal/filters/graphqlguard"
 	"prisma/internal/filters/grpcweb"
 	"prisma/internal/filters/headers"
@@ -73,6 +74,10 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	}
 	if pol.AuthZ != nil {
 		ch.Request = append(ch.Request, authz.New(rc.Name, pol.AuthZ, m))
+	}
+	if pol.ExtAuthz != nil {
+		// After local checks, so cheap rejections never cost a round-trip.
+		ch.Request = append(ch.Request, extauthz.New(rc.Name, pol.ExtAuthz, m))
 	}
 	if pol.GraphQL != nil {
 		maxBody := int64(rc.MaxBodyBytes)
