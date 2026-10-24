@@ -67,13 +67,15 @@ type objectRef struct {
 	Namespace *string `json:"namespace"`
 }
 
+// parentRef omits unset fields: the API server rejects explicit nulls when
+// it is written back in route status.
 type parentRef struct {
-	Group       *string `json:"group"`
-	Kind        *string `json:"kind"`
-	Namespace   *string `json:"namespace"`
+	Group       *string `json:"group,omitempty"`
+	Kind        *string `json:"kind,omitempty"`
+	Namespace   *string `json:"namespace,omitempty"`
 	Name        string  `json:"name"`
-	SectionName *string `json:"sectionName"`
-	Port        *int    `json:"port"`
+	SectionName *string `json:"sectionName,omitempty"`
+	Port        *int    `json:"port,omitempty"`
 }
 
 type backendRef struct {
