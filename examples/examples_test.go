@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"prisma/internal/config"
+	"prisma/internal/demo"
 	"prisma/internal/gateway"
 	"prisma/internal/telemetry"
 )
@@ -40,6 +41,11 @@ func TestExampleConfigs(t *testing.T) {
 			for i, p := range cfg.Plugins {
 				cfg.Plugins[i].File = buildPlugin(t, filepath.Join(filepath.Dir(p.File), "plugin"))
 			}
+			for i := range cfg.Routes {
+				if tc := cfg.Routes[i].GRPCTranscode; tc != nil {
+					tc.DescriptorSet = shopDescriptors(t)
+				}
+			}
 			gw := gateway.New(telemetry.NewMetrics(), nil)
 			defer gw.Close()
 			if err := gw.Apply(cfg, version); err != nil {
@@ -63,4 +69,19 @@ func buildPlugin(t *testing.T, src string) string {
 		t.Fatalf("build %s: %v\n%s", src, err, b)
 	}
 	return out
+}
+
+// shopDescriptors writes the demo descriptor set that the transcoding
+// example tells readers to generate.
+func shopDescriptors(t *testing.T) string {
+	t.Helper()
+	b, err := demo.ShopDescriptorSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "shop.binpb")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

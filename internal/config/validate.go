@@ -326,6 +326,19 @@ func (c *Config) Validate() error {
 				add("%s: grpcWeb requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
 			}
 		}
+		if tc := r.GRPCTranscode; tc != nil {
+			if tc.DescriptorSet == "" {
+				add("%s: grpcTranscode.descriptorSet is required", where)
+			}
+			if r.GRPCWeb || r.Type == "grpc" || r.Type == "graphql" {
+				add("%s: grpcTranscode needs an http route (not grpc, graphql or grpcWeb)", where)
+			}
+			for _, b := range r.Backends {
+				if clusters[b.Cluster] && clusterProto[b.Cluster] == "http1" {
+					add("%s: grpcTranscode requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
+				}
+			}
+		}
 		if mi := r.Mirror; mi != nil {
 			if !clusters[mi.Cluster] {
 				add("%s: mirror: unknown cluster %q", where, mi.Cluster)

@@ -476,11 +476,13 @@ type Route struct {
 	Rewrite        *Rewrite        `yaml:"rewrite,omitempty" json:"rewrite,omitempty"`
 	Retries        *Retries        `yaml:"retries,omitempty" json:"retries,omitempty"`
 	// GRPCWeb translates gRPC-Web requests into native gRPC for the upstream.
-	GRPCWeb      bool           `yaml:"grpcWeb" json:"grpcWeb"`
-	Mirror       *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
-	Timeout      *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
-	MaxBodyBytes ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
-	Backends     []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
+	GRPCWeb bool `yaml:"grpcWeb" json:"grpcWeb"`
+	// GRPCTranscode serves gRPC backends as a JSON/HTTP API.
+	GRPCTranscode *GRPCTranscode `yaml:"grpcTranscode,omitempty" json:"grpcTranscode,omitempty"`
+	Mirror        *Mirror        `yaml:"mirror,omitempty" json:"mirror,omitempty"`
+	Timeout       *time.Duration `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	MaxBodyBytes  ByteSize       `yaml:"maxBodyBytes" json:"maxBodyBytes"`
+	Backends      []Backend      `yaml:"backends,omitempty" json:"backends,omitempty"`
 }
 
 type Match struct {
@@ -520,6 +522,29 @@ type Retries struct {
 	Budget             float64       `yaml:"budget" json:"budget"`
 	Backoff            time.Duration `yaml:"backoff" json:"backoff"`
 	AllowNonIdempotent bool          `yaml:"allowNonIdempotent" json:"allowNonIdempotent"`
+}
+
+// GRPCTranscode maps JSON/HTTP requests to gRPC calls using the
+// google.api.http annotations in a descriptor set (protoc
+// --include_imports --descriptor_set_out=...), and gRPC responses back to
+// JSON. Unary and server-streaming methods are supported.
+type GRPCTranscode struct {
+	DescriptorSet string `yaml:"descriptorSet" json:"descriptorSet"`
+	// Services limits transcoding to these fully qualified services
+	// (default: every service in the set).
+	Services []string `yaml:"services,omitempty" json:"services,omitempty"`
+	// AutoMapping also accepts POST /package.Service/Method with a JSON body
+	// for methods that have no http annotation.
+	AutoMapping bool `yaml:"autoMapping" json:"autoMapping"`
+	// EmitUnpopulated includes zero-valued fields in responses.
+	EmitUnpopulated bool `yaml:"emitUnpopulated" json:"emitUnpopulated"`
+	// UseProtoNames writes field names as in the .proto file instead of
+	// lowerCamelCase.
+	UseProtoNames bool `yaml:"useProtoNames" json:"useProtoNames"`
+	// DiscardUnknown ignores unknown JSON fields and query parameters
+	// instead of rejecting the request.
+	DiscardUnknown bool     `yaml:"discardUnknown" json:"discardUnknown"`
+	MaxBodyBytes   ByteSize `yaml:"maxBodyBytes" json:"maxBodyBytes"`
 }
 
 // Mirror copies a sample of a route's traffic to a shadow cluster. Shadow

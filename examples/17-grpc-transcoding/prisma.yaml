@@ -1,0 +1,40 @@
+# gRPC-JSON transcoding: a gRPC service exposed as a REST/JSON API, using
+# the google.api.http annotations in its .proto file.
+#   go run ./cmd/demo-upstream -write-descriptors examples/17-grpc-transcoding/shop.binpb
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/17-grpc-transcoding/prisma.yaml
+# Run from the repository root (descriptorSet is relative to it).
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: shop
+    protocol: h2c
+    endpoints: [{address: "localhost:9004"}]
+
+routes:
+  # REST clients: GET /v1/orders/42, POST /v1/shops/main/orders, ...
+  - name: shop-rest
+    match: {pathPrefix: /v1}
+    grpcTranscode:
+      descriptorSet: examples/17-grpc-transcoding/shop.binpb
+      services: [shop.v1.Orders]
+    # Every HTTP feature applies to the JSON side.
+    masking:
+      rules: [{selector: "$..email", strategy: partial, keepLast: 12}]
+    backends: [{cluster: shop}]
+
+  # Methods without annotations, called by name with a JSON body.
+  - name: shop-rpc
+    match: {pathPrefix: /shop.v1.Orders/, methods: [POST]}
+    grpcTranscode:
+      descriptorSet: examples/17-grpc-transcoding/shop.binpb
+      autoMapping: true
+    backends: [{cluster: shop}]

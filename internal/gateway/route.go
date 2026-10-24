@@ -23,6 +23,7 @@ import (
 	"prisma/internal/filters/openapi"
 	"prisma/internal/filters/ratelimit"
 	"prisma/internal/filters/redirect"
+	"prisma/internal/filters/transcode"
 	"prisma/internal/filters/wasmplugin"
 	"prisma/internal/gwerr"
 	"prisma/internal/pipeline"
@@ -170,6 +171,16 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if openapiFilter != nil && pol.OpenAPI.Responses == "report" {
 		// Innermost: check the upstream's own response, before masking.
 		ch.Response = append(ch.Response, openapiFilter)
+	}
+	if tc := rc.GRPCTranscode; tc != nil {
+		f, err := transcode.New(tc)
+		if err != nil {
+			return nil, err
+		}
+		// Last on the way in, first on the way out: every other filter
+		// (OpenAPI, masking, caching, compression) sees JSON.
+		ch.Request = append(ch.Request, f)
+		ch.Response = append(ch.Response, f)
 	}
 
 	for _, b := range rc.Backends {

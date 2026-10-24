@@ -1,7 +1,8 @@
 // Command demo-upstream runs sample backends for trying Prisma locally:
-// a REST orders API (:9001), a tiny GraphQL endpoint (:9002) and a gRPC
-// health service (:9003). Run several copies with different -name and
-// addresses to see load balancing; an empty address disables that backend.
+// a REST orders API (:9001), a tiny GraphQL endpoint (:9002), a gRPC health
+// service (:9003) and a gRPC orders service with HTTP annotations (:9004).
+// Run several copies with different -name and addresses to see load
+// balancing; an empty address disables that backend.
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +31,8 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
+
+	"prisma/internal/demo"
 )
 
 var instance string
@@ -38,14 +42,26 @@ func main() {
 	restTLS := flag.String("rest-tls", "", "REST API over TLS (self-signed certificate), e.g. :9443")
 	gql := flag.String("graphql", ":9002", "GraphQL address")
 	grpcAddr := flag.String("grpc", ":9003", "gRPC address")
+	shop := flag.String("shop", ":9004", "gRPC shop.v1.Orders service (h2c), for transcoding")
+	writeDescriptors := flag.String("write-descriptors", "", "write the shop.v1.Orders descriptor set to this file and exit")
 	flag.StringVar(&instance, "name", "demo-1", "instance name reported in responses")
 	flag.Parse()
+	if *writeDescriptors != "" {
+		b, err := demo.ShopDescriptorSet()
+		if err == nil {
+			err = os.WriteFile(*writeDescriptors, b, 0o644)
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	done := make(chan struct{})
 	for _, s := range []struct {
 		addr  string
 		serve func(string)
-	}{{*rest, serveREST}, {*restTLS, serveRESTTLS}, {*gql, serveGraphQL}, {*grpcAddr, serveGRPC}} {
+	}{{*rest, serveREST}, {*restTLS, serveRESTTLS}, {*gql, serveGraphQL}, {*grpcAddr, serveGRPC}, {*shop, serveShop}} {
 		if s.addr != "" {
 			go func() { s.serve(s.addr); done <- struct{}{} }()
 		}
@@ -213,4 +229,18 @@ func selfSigned(hosts ...string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+}
+
+// serveShop serves shop.v1.Orders (see internal/demo) over h2c, for the
+// gRPC-JSON transcoding example.
+func serveShop(addr string) {
+	h, err := demo.ShopHandler()
+	if err != nil {
+		log.Fatal(err)
+	}
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Addr: addr, Handler: h, Protocols: p}
+	log.Printf("%s: gRPC shop.v1.Orders on %s", instance, addr)
+	log.Fatal(srv.ListenAndServe())
 }
