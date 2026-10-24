@@ -12,6 +12,7 @@ import (
 	"prisma/internal/config"
 	"prisma/internal/filters/authn"
 	"prisma/internal/filters/authz"
+	"prisma/internal/filters/cache"
 	"prisma/internal/filters/compression"
 	"prisma/internal/filters/cors"
 	"prisma/internal/filters/extauthz"
@@ -94,6 +95,13 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if len(pol.RateLimit) > 0 {
 		ch.Request = append(ch.Request, ratelimit.New(rc.Name, pol.RateLimit, d.gw.local, d.redis, m))
 	}
+	var cacheFilter *cache.Filter
+	if pol.Cache != nil {
+		// After authn, authz and rate limiting: hits are still authorized and
+		// counted. Before rewrite: keys use the client-facing URL.
+		cacheFilter = cache.New(rc.Name, pol.Cache, d.gw.cache, m)
+		ch.Request = append(ch.Request, cacheFilter)
+	}
 	if rc.Rewrite != nil {
 		ch.Request = append(ch.Request, redirect.NewRewrite(rc.Rewrite))
 	}
@@ -122,6 +130,11 @@ func (d routeDeps) buildRoute(rc *config.Route) (*routeHandler, error) {
 	if pol.Compression != nil {
 		// Outermost on the way out: compress the final (masked) body.
 		ch.Response = append([]pipeline.ResponseFilter{compression.New(pol.Compression)}, ch.Response...)
+	}
+	if cacheFilter != nil {
+		// Outermost: store exactly what the client receives (masked and
+		// compressed; Vary: Accept-Encoding keeps encodings apart).
+		ch.Response = append([]pipeline.ResponseFilter{cacheFilter}, ch.Response...)
 	}
 
 	for _, b := range rc.Backends {

@@ -17,6 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"prisma/internal/config"
+	"prisma/internal/filters/cache"
 	"prisma/internal/gateway"
 )
 
@@ -68,6 +69,19 @@ func New(g *gateway.Gateway, cfg config.Admin, reload func() error) http.Handler
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"reloaded": true, "version": g.Snapshot().Version})
+	})
+
+	mux.HandleFunc("GET /cache", func(w http.ResponseWriter, _ *http.Request) {
+		entries, bytes := g.Cache().Stats()
+		writeJSON(w, http.StatusOK, map[string]any{"entries": entries, "bytes": bytes})
+	})
+	// POST /cache/purge?route=orders purges one route; no route purges all.
+	mux.HandleFunc("POST /cache/purge", func(w http.ResponseWriter, r *http.Request) {
+		prefix := ""
+		if route := r.URL.Query().Get("route"); route != "" {
+			prefix = cache.RoutePrefix(route)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"purged": g.Cache().Purge(prefix)})
 	})
 
 	mux.HandleFunc("GET /clusters", func(w http.ResponseWriter, _ *http.Request) {

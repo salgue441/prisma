@@ -27,6 +27,9 @@ func (c *Config) EffectivePolicy(r *Route) Policy {
 		if p.CORS != nil {
 			out.CORS = p.CORS
 		}
+		if p.Cache != nil {
+			out.Cache = p.Cache
+		}
 		if p.Compression != nil {
 			out.Compression = p.Compression
 		}

@@ -67,8 +67,12 @@ type Context struct {
 	Attempts        int
 	UpstreamLatency time.Duration
 
-	// Rejection names the filter that short-circuited the request, for logs.
+	// Rejection names the filter that rejected the request, for logs.
 	Rejection string
+	// ServedBy names the filter that answered the request itself.
+	ServedBy string
+	// CacheStatus is hit, miss or bypass on cached routes.
+	CacheStatus string
 	// Error is the internal error behind a gateway-generated response, for logs.
 	Error string
 
@@ -103,6 +107,12 @@ type Responder interface {
 	Respond(w http.ResponseWriter, kind protocol.Kind)
 }
 
+// Served marks Responders that answer a request successfully at the gateway
+// (cache hits, redirects, CORS preflights) rather than rejecting it.
+type Served interface {
+	ServedByGateway()
+}
+
 type RequestFilter interface {
 	Name() string
 	// OnRequest returns nil to continue, or a Responder to stop the chain.
@@ -134,6 +144,10 @@ func (ch *Chain) RunRequest(c *Context) (res Responder) {
 	for _, f := range ch.Request {
 		current = f.Name()
 		if r := f.OnRequest(c); r != nil {
+			if _, ok := r.(Served); ok {
+				c.ServedBy = current
+				return r
+			}
 			c.Rejection = current
 			if e, ok := r.(*gwerr.Error); ok && e.Reason != "" {
 				c.Error = e.Reason
