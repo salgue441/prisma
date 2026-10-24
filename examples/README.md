@@ -32,6 +32,7 @@ The gateway listens on `:8080` and its admin API on `127.0.0.1:9901`.
 | [14-kubernetes](14-kubernetes) | Gateway API controller and PrismaPolicy on a kind cluster |
 | [15-tcp-tls](15-tcp-tls) | TCP proxying, TLS passthrough by SNI, TLS termination |
 | [16-openapi](16-openapi) | Validating requests (and responses) against an OpenAPI document |
+| [17-grpc-transcoding](17-grpc-transcoding) | A gRPC service served as a REST/JSON API from its `google.api.http` annotations |
 
 [tools/](tools) has helpers used by the examples: `token` mints test JWTs and
 `hmac-sign` sends HMAC-signed requests.

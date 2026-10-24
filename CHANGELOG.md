@@ -23,6 +23,16 @@ All notable changes to this project are documented here. The format follows
   operations. `mode: report` only logs and counts; `responses: report`
   validates upstream JSON responses without blocking them. Gateway errors can
   now carry an `errors` member in their problem document.
+- **gRPC-JSON transcoding** (`grpcTranscode` on routes): REST/JSON requests
+  are mapped to gRPC calls through the `google.api.http` annotations in a
+  descriptor set, including nested path variables, `**` and custom verbs,
+  query parameters, `body` and `response_body`, and additional bindings.
+  Server-streaming methods return JSON arrays as messages arrive; gRPC
+  errors become HTTP statuses with a problem document. `autoMapping` calls
+  unannotated methods as `POST /package.Service/Method`. Other filters,
+  masking included, see the JSON side.
+- The demo upstream serves an annotated `shop.v1.Orders` gRPC service on
+  `:9004` and can write its descriptor set (`-write-descriptors`).
 - `examples/`: runnable walkthroughs with expected output, from a
   minimal config to the Gateway API on kind. `go test ./examples/` checks
   that every example config loads and compiles.

@@ -33,6 +33,7 @@ from a minimal config to the Gateway API on a kind cluster.
 | Area | Supported |
 |------|-----------|
 | Protocols | HTTP/1.1, HTTP/2 (TLS + ALPN), h2c, WebSocket upgrades, GraphQL (GET/POST/batch), gRPC unary and streaming with trailers passed through, gRPC-Web translated to native gRPC (binary and text) |
+| gRPC-JSON transcoding | gRPC services exposed as REST/JSON from their `google.api.http` annotations (path templates, query parameters, body mapping, `response_body`, additional bindings, custom verbs); server streaming as JSON arrays; gRPC errors mapped to HTTP statuses; optional call-by-name for unannotated methods |
 | TCP and TLS | `tcp` listeners (optionally terminating TLS) and `tls-passthrough` listeners routed by SNI without decryption; weighted backends, IP allow/deny, idle timeouts, half-close, TLS origination to upstreams |
 | Routing | Host (exact/wildcard), path (exact/regex/prefix), method, headers, gRPC service/method, per-listener routes, weighted backend splits |
 | Authentication | JWT (HS*, or RS/ES/EdDSA via JWKS with caching and key rotation), OAuth2 token introspection (RFC 7662, cached, with concurrent lookups merged), API keys (hashed in memory), HMAC request signing (with replay protection), mTLS; `any`/`all` modes |
