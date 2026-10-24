@@ -1,0 +1,14 @@
+# Image for the demo upstream, used by the Kubernetes example.
+#   docker build -f examples/14-kubernetes/Dockerfile.demo -t prisma-demo:dev .
+FROM golang:1.27 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -o /out/demo-upstream ./cmd/demo-upstream
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/demo-upstream /demo-upstream
+# Numeric so Kubernetes runAsNonRoot can verify it (65532 is distroless "nonroot").
+USER 65532:65532
+ENTRYPOINT ["/demo-upstream"]

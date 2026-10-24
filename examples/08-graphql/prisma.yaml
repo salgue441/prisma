@@ -1,0 +1,49 @@
+# GraphQL protection: query limits, schema validation, field-level
+# authorization and cost-based rate limits.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/08-graphql/prisma.yaml
+# Run from the repository root (schemaFile is relative to it).
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: graph
+    endpoints: [{address: "localhost:9002"}]
+
+consumers:
+  - name: web-app
+    apiKeys: [web-key]
+    scopes: [users:read]
+  - name: admin-console
+    apiKeys: [admin-key]
+    scopes: [users:read, users:admin, pii:read]
+
+routes:
+  - name: graphql
+    type: graphql
+    match: {path: /graphql}
+    authn: {apiKey: {header: X-API-Key}}
+    graphql:
+      maxDepth: 5
+      maxAliases: 10
+      maxRootFields: 5
+      maxCost: 200
+      maxBatch: 5
+      blockIntrospection: true
+      schemaFile: examples/08-graphql/schema.graphql
+      fieldAuthz:
+        # Without pii:read the field is removed from the query; the rest runs.
+        - {coordinate: User.ssn, scopes: [pii:read], onDeny: strip}
+        # Mutations need users:admin, or the whole operation is rejected.
+        - {coordinate: "Mutation.*", scopes: [users:admin]}
+    rateLimit:
+      # Each consumer may spend 1000 cost points per minute.
+      - {name: query-cost, key: [consumer], limit: 1000, period: 1m, cost: graphql}
+    backends: [{cluster: graph}]

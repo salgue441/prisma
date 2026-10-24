@@ -1,0 +1,58 @@
+# Resilience: timeouts, retries with a budget, outlier ejection and a
+# circuit breaker, against an upstream that is slow or flaky on demand.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/demo-upstream -name backup -rest :9011 -graphql "" -grpc ""
+#   go run ./cmd/prisma -config examples/05-resilience/prisma.yaml
+apiVersion: prisma/v1
+
+global:
+  requestTimeout: 10s
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: flaky
+    endpoints: [{address: "localhost:9001"}, {address: "localhost:9011"}]
+    connectTimeout: 1s
+    # Eject an endpoint after 3 consecutive failures, for 10s, 20s, 40s...
+    outlierDetection: {consecutiveFailures: 3, baseEjection: 10s, maxEjectionPercent: 50}
+
+  - name: fragile
+    endpoints: [{address: "localhost:9001"}]
+    # Open the circuit when half of at least 10 requests in 10s fail; probe
+    # again after 5s. At most 20 requests in flight.
+    circuitBreaker: {errorRatio: 0.5, window: 10s, minRequests: 10, openDuration: 5s, maxConcurrent: 20}
+
+routes:
+  # /flaky fails 50% of the time; retries hide most failures from clients.
+  - name: retried
+    match: {path: /retried}
+    rewrite: {stripPrefix: /retried, replacePrefix: /flaky}
+    retries:
+      attempts: 3
+      on: [connect-failure, "503"]
+      backoff: 25ms
+      budget: 0.2       # retries may add at most 20% extra load
+    backends: [{cluster: flaky}]
+
+  - name: not-retried
+    match: {path: /not-retried}
+    rewrite: {stripPrefix: /not-retried, replacePrefix: /flaky}
+    backends: [{cluster: flaky}]
+
+  # Requests slower than the route timeout get a 504.
+  - name: slow
+    match: {path: /slow}
+    timeout: 1s
+    backends: [{cluster: flaky}]
+
+  - name: breaker
+    match: {path: /breaker}
+    rewrite: {stripPrefix: /breaker, replacePrefix: /flaky}
+    backends: [{cluster: fragile}]

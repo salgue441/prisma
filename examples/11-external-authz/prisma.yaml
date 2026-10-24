@@ -1,0 +1,38 @@
+# External authorization: the gateway authenticates the caller, then asks a
+# separate service whether this particular request is allowed.
+#   go run ./cmd/demo-upstream
+#   go run ./examples/11-external-authz/authz-server
+#   go run ./cmd/prisma -config examples/11-external-authz/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "localhost:9001"}]
+
+consumers:
+  - {name: acme-app, apiKeys: [acme-key], scopes: [orders:read]}
+  - {name: globex-app, apiKeys: [globex-key], scopes: [orders:read]}
+  - {name: support, apiKeys: [support-key], scopes: [orders:read, orders:admin]}
+
+routes:
+  - name: orders
+    match: {pathPrefix: /orders}
+    authn: {apiKey: {header: X-API-Key}}
+    authz: {scopes: [orders:read]}        # cheap checks first...
+    extAuthz:                             # ...then the external decision
+      url: http://localhost:9100
+      timeout: 200ms
+      failOpen: false                     # authz service down: 503, not allow
+      upstreamHeaders: [X-Tenant]         # copied from the allow response
+      clientHeaders: [X-Deny-Reason]      # copied from a deny response
+    headers:
+      request: {set: {X-Consumer: "${consumer}"}}
+    backends: [{cluster: orders}]

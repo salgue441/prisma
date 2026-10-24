@@ -1,0 +1,42 @@
+# Observability stack: traces to Jaeger, metrics to Prometheus, JSON access
+# logs to stdout. Used by docker-compose.yaml in this directory, where the
+# hostnames below resolve to containers.
+apiVersion: prisma/v1
+
+admin:
+  address: 0.0.0.0:9901     # reachable by Prometheus inside the compose network
+
+tracing:
+  endpoint: jaeger:4317
+  insecure: true
+  sampleRatio: 1.0          # trace everything; use 0.01-0.1 in production
+  serviceName: prisma-gateway
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "demo:9001"}, {address: "demo-2:9001"}]
+    healthCheck: {type: http, path: /health, interval: 5s}
+  - name: graph
+    endpoints: [{address: "demo:9002"}]
+
+consumers:
+  - name: demo
+    apiKeys: [demo-key]
+
+routes:
+  - name: orders
+    match: {pathPrefix: /api}
+    authn: {apiKey: {header: X-API-Key}}
+    rewrite: {stripPrefix: /api}
+    retries: {attempts: 2, on: ["503"]}
+    backends: [{cluster: orders}]
+
+  - name: graphql
+    type: graphql
+    match: {path: /graphql}
+    backends: [{cluster: graph}]

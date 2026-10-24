@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `examples/`: fourteen runnable walkthroughs with expected output, from a
+  minimal config to the Gateway API on kind. `go test ./examples/` checks
+  that every example config loads and compiles.
+- The demo upstream takes `-name` and per-backend address flags (to run
+  several instances), and has `/echo`, `/slow`, `/flaky`, `/products`
+  (cacheable) and `/admin/health` endpoints for the examples.
+
+### Fixed
+- The container image ran as the named user `nonroot`, which Kubernetes
+  `runAsNonRoot` cannot verify, so pods failed with CreateContainerConfigError.
+  It now runs as UID 65532.
+- The Gateway API Deployment relied on `NET_BIND_SERVICE` to bind port 80,
+  which a non-root process does not get; it now sets
+  `net.ipv4.ip_unprivileged_port_start=0` instead.
+- `deploy/kubernetes/gateway-api.yaml` could not be applied in one step: its
+  example PrismaPolicy was created before the CRD was established. The
+  examples moved to `examples/14-kubernetes`.
+- `rewrite: {stripPrefix: /, replacePrefix: /x/}` dropped the path separator
+  (`/hello` became `/xhello`).
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

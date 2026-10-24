@@ -1,0 +1,53 @@
+# Serving browser apps: CORS, compression and response caching.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/10-browser-apps/prisma.yaml
+apiVersion: prisma/v1
+
+global:
+  cacheMaxBytes: 32MiB
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: shop
+    endpoints: [{address: "localhost:9001"}]
+
+consumers:
+  - name: storefront
+    apiKeys: [storefront-key]
+
+policies:
+  browser:
+    cors:
+      allowOrigins: ["http://localhost:3000", "https://*.shop.example"]
+      allowMethods: [GET, POST]
+      allowHeaders: [content-type, x-api-key]
+      exposeHeaders: [x-request-id, x-cache, ratelimit-remaining]
+      allowCredentials: true
+      maxAge: 10m
+    compression:
+      algorithms: [zstd, gzip]
+      minBytes: 1KiB
+
+routes:
+  # The product list is public and identical for everyone, so it is cached
+  # once for all callers. The upstream sends Cache-Control: max-age=30.
+  - name: products
+    match: {path: /products, methods: [GET]}
+    use: [browser]
+    cache: {shared: true}
+    backends: [{cluster: shop}]
+
+  # Orders are per caller: authenticated, and cached per consumer if at all.
+  - name: orders
+    match: {pathPrefix: /orders}
+    use: [browser]
+    authn: {apiKey: {header: X-API-Key}}
+    cache: {defaultTTL: 5s}
+    backends: [{cluster: shop}]

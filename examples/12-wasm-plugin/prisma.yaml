@@ -1,0 +1,35 @@
+# A Proxy-Wasm plugin that enforces a tenant header. Build it first:
+#   (cd examples/12-wasm-plugin/plugin && GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../tenant.wasm .)
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/12-wasm-plugin/prisma.yaml
+# Run from the repository root (plugin paths are relative to it).
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: app
+    endpoints: [{address: "localhost:9001"}]
+
+plugins:
+  - name: tenant
+    file: examples/12-wasm-plugin/tenant.wasm
+    # Handed to the plugin as JSON (proxywasm.GetPluginConfiguration).
+    config:
+      header: x-tenant
+      plans: {acme: enterprise, globex: free, initech: free}
+    instances: 2        # VM pool size; each VM handles one request at a time
+    failOpen: false     # if the plugin crashes, fail the request (500)
+
+routes:
+  - name: tenants
+    match: {pathPrefix: /}
+    plugins: [tenant]
+    rewrite: {stripPrefix: /, replacePrefix: /echo/}
+    backends: [{cluster: app}]
