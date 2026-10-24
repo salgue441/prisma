@@ -26,6 +26,7 @@ type Server struct {
 	srv   *http.Server
 	certs atomic.Pointer[[]tls.Certificate]
 	ln    net.Listener
+	sock  *socket // set when managed by a ListenerSet
 }
 
 func (g *Gateway) NewServer(l config.Listener) (*Server, error) {
@@ -123,16 +124,30 @@ func (s *Server) Listen() error {
 	if err != nil {
 		return fmt.Errorf("listener %s: %w", s.Name, err)
 	}
-	if pp := s.cfg.ProxyProtocol; pp != nil {
-		// Below TLS: the PROXY header precedes the TLS handshake.
-		pl := &proxyproto.Listener{Listener: ln, Optional: pp.Optional, HeaderTimeout: pp.HeaderTimeout}
-		for _, c := range pp.TrustedCIDRs {
-			pl.Trusted = append(pl.Trusted, netip.MustParsePrefix(c))
-		}
-		ln = pl
-	}
-	s.ln = ln
+	s.ln = s.wrap(ln)
 	return nil
+}
+
+// attach makes s the current server for a ListenerSet socket.
+func (s *Server) attach(sock *socket) {
+	cl := &chanListener{addr: sock.ln.Addr(), conns: make(chan net.Conn), done: make(chan struct{})}
+	s.sock = sock
+	s.ln = s.wrap(cl)
+	sock.target.Store(cl)
+}
+
+// wrap adds PROXY protocol parsing below TLS (the header precedes the
+// handshake).
+func (s *Server) wrap(ln net.Listener) net.Listener {
+	pp := s.cfg.ProxyProtocol
+	if pp == nil {
+		return ln
+	}
+	pl := &proxyproto.Listener{Listener: ln, Optional: pp.Optional, HeaderTimeout: pp.HeaderTimeout}
+	for _, c := range pp.TrustedCIDRs {
+		pl.Trusted = append(pl.Trusted, netip.MustParsePrefix(c))
+	}
+	return pl
 }
 
 // Addr returns the bound address (useful with port 0).
