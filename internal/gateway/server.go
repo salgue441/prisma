@@ -27,10 +27,27 @@ type Server struct {
 	certs atomic.Pointer[[]tls.Certificate]
 	ln    net.Listener
 	sock  *socket // set when managed by a ListenerSet
+	// stream is set for tcp and tls-passthrough listeners, which proxy
+	// connections instead of serving HTTP.
+	stream *streamServer
 }
 
 func (g *Gateway) NewServer(l config.Listener) (*Server, error) {
 	s := &Server{Name: l.Name, cfg: l}
+	if l.IsStream() {
+		s.stream = &streamServer{gw: g, listener: l.Name, passthru: l.Type == config.ListenerTLSPassthrough}
+		if l.TLS != nil {
+			if err := s.ReloadCertificates(); err != nil {
+				return nil, err
+			}
+			tc, err := s.tlsConfig()
+			if err != nil {
+				return nil, err
+			}
+			s.stream.tlsConfig = tc
+		}
+		return s, nil
+	}
 	p := new(http.Protocols)
 	for _, proto := range l.Protocols {
 		switch proto {
@@ -160,6 +177,10 @@ func (s *Server) wrap(ln net.Listener) net.Listener {
 func (s *Server) Addr() string { return s.ln.Addr().String() }
 
 func (s *Server) Serve() error {
+	if s.stream != nil {
+		slog.Info("listening", "listener", s.Name, "address", s.Addr(), "type", s.cfg.Type, "tls", s.cfg.TLS != nil)
+		return s.stream.serve(s.ln)
+	}
 	slog.Info("listening", "listener", s.Name, "address", s.Addr(), "tls", s.cfg.TLS != nil,
 		"protocols", strings.Join(s.cfg.Protocols, ","))
 	var err error
@@ -176,7 +197,12 @@ func (s *Server) Serve() error {
 
 // Shutdown stops accepting, sends GOAWAY to HTTP/2 clients and waits for
 // in-flight requests until ctx expires.
-func (s *Server) Shutdown(ctx context.Context) error { return s.srv.Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.stream != nil {
+		return s.stream.shutdown(ctx)
+	}
+	return s.srv.Shutdown(ctx)
+}
 
 // Config returns the listener config this server was built from.
 func (s *Server) Config() config.Listener { return s.cfg }

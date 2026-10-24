@@ -86,8 +86,12 @@ type Tracing struct {
 }
 
 type Listener struct {
-	Name                 string         `yaml:"name" json:"name"`
-	Address              string         `yaml:"address" json:"address"`
+	Name    string `yaml:"name" json:"name"`
+	Address string `yaml:"address" json:"address"`
+	// Type: http (default) | tcp | tls-passthrough. tcp proxies raw TCP
+	// connections to tcp routes, terminating TLS first when tls is set;
+	// tls-passthrough routes TLS connections by SNI without decrypting them.
+	Type                 string         `yaml:"type,omitempty" json:"type,omitempty"`
 	Protocols            []string       `yaml:"protocols" json:"protocols"` // http1, http2, h2c
 	TLS                  *ListenerTLS   `yaml:"tls,omitempty" json:"tls,omitempty"`
 	ReadHeaderTimeout    time.Duration  `yaml:"readHeaderTimeout" json:"readHeaderTimeout"`
@@ -431,8 +435,11 @@ type FieldAuthz struct {
 }
 
 type Route struct {
-	Name      string   `yaml:"name" json:"name"`
-	Type      string   `yaml:"type,omitempty" json:"type,omitempty"` // http | graphql | grpc
+	Name string `yaml:"name" json:"name"`
+	// Type: http (default) | graphql | grpc | tcp. tcp routes attach to tcp
+	// and tls-passthrough listeners; they match on SNI (match.hosts) and
+	// support backends, authz IP lists and timeout (the idle timeout).
+	Type      string   `yaml:"type,omitempty" json:"type,omitempty"`
 	Listeners []string `yaml:"listeners,omitempty" json:"listeners,omitempty"`
 	Priority  int      `yaml:"priority" json:"priority"`
 	Match     Match    `yaml:"match" json:"match"`
@@ -507,3 +514,19 @@ type Backend struct {
 	Cluster string `yaml:"cluster" json:"cluster"`
 	Weight  int    `yaml:"weight" json:"weight"`
 }
+
+// Listener types.
+const (
+	ListenerHTTP           = "http"
+	ListenerTCP            = "tcp"
+	ListenerTLSPassthrough = "tls-passthrough"
+)
+
+// IsStream reports whether the listener proxies connections (tcp,
+// tls-passthrough) rather than HTTP requests.
+func (l *Listener) IsStream() bool {
+	return l.Type == ListenerTCP || l.Type == ListenerTLSPassthrough
+}
+
+// RouteTCP is the route type for connection-level (L4) routes.
+const RouteTCP = "tcp"

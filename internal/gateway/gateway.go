@@ -31,9 +31,11 @@ import (
 const drainGrace = 60 * time.Second
 
 type Snapshot struct {
-	Version  string
-	Config   *config.Config
-	Router   *router.Router
+	Version string
+	Config  *config.Config
+	Router  *router.Router
+	// Streams holds the tcp routes of each tcp or tls-passthrough listener.
+	Streams  map[string]*streamTable
 	Clusters map[string]*upstream.Cluster
 	Plugins  map[string]*loadedPlugin
 	LoadedAt time.Time
@@ -210,6 +212,9 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 	routes := make([]*router.Route, 0, len(cfg.Routes))
 	for i := range cfg.Routes {
 		rcfg := &cfg.Routes[i]
+		if rcfg.Type == config.RouteTCP {
+			continue
+		}
 		h, err := deps.buildRoute(rcfg)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("route %s: %w", rcfg.Name, err))
@@ -222,10 +227,13 @@ func (g *Gateway) build(cfg *config.Config, version string, prev *Snapshot, rc r
 		}
 		routes = append(routes, r)
 	}
+	streams, err := buildStreams(cfg, snap.Clusters)
+	errs = append(errs, err)
 	if err := errors.Join(errs...); err != nil {
 		return nil, created, err
 	}
 	snap.Router = router.New(routes)
+	snap.Streams = streams
 	ok = true
 	return snap, created, nil
 }

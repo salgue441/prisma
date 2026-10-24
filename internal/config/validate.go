@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -43,6 +44,9 @@ func (c *Config) Validate() error {
 
 	listeners := map[string]bool{}
 	addresses := map[string]string{}
+	// streamListeners maps tcp and tls-passthrough listeners to whether they
+	// see an SNI (passthrough, or tcp with TLS termination).
+	streamListeners := map[string]bool{}
 	if len(c.Listeners) == 0 && c.GatewayAPI == nil {
 		add("listeners: at least one listener is required")
 	}
@@ -61,6 +65,19 @@ func (c *Config) Validate() error {
 			add("%s: address %s is already used by listener %s", where, l.Address, other)
 		}
 		addresses[l.Address] = l.Name
+		switch l.Type {
+		case "", ListenerHTTP:
+		case ListenerTCP, ListenerTLSPassthrough:
+			streamListeners[l.Name] = l.Type == ListenerTLSPassthrough || l.TLS != nil
+			if len(l.Protocols) > 0 {
+				add("%s: protocols apply only to http listeners", where)
+			}
+			if l.Type == ListenerTLSPassthrough && l.TLS != nil {
+				add("%s: tls-passthrough listeners forward TLS untouched and cannot have tls (use type tcp with tls to terminate)", where)
+			}
+		default:
+			add("%s: type must be http, tcp or tls-passthrough", where)
+		}
 		for _, p := range l.Protocols {
 			if !slices.Contains([]string{"http1", "http2", "h2c"}, p) {
 				add("%s: unknown protocol %q", where, p)
@@ -229,8 +246,17 @@ func (c *Config) Validate() error {
 			add("%s: duplicate route name", where)
 		}
 		routes[r.Name] = true
-		if !slices.Contains([]string{"", "http", "graphql", "grpc"}, r.Type) {
+		if !slices.Contains([]string{"", "http", "graphql", "grpc", RouteTCP}, r.Type) {
 			add("%s: unknown type %q", where, r.Type)
+		}
+		if r.Type == RouteTCP {
+			c.validateTCPRoute(where, r, streamListeners, clusters, add)
+			continue
+		}
+		for _, l := range r.Listeners {
+			if _, stream := streamListeners[l]; stream {
+				add("%s: listener %q is a %s listener; only tcp routes can attach to it", where, l, c.listener(l).Type)
+			}
 		}
 		for _, l := range r.Listeners {
 			if !listeners[l] {
@@ -510,4 +536,73 @@ func (c *Config) ValidatePolicy(where string, p *Policy) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (c *Config) listener(name string) *Listener {
+	for i := range c.Listeners {
+		if c.Listeners[i].Name == name {
+			return &c.Listeners[i]
+		}
+	}
+	return nil
+}
+
+// validateTCPRoute checks a connection-level route: it needs stream
+// listeners and backends, and supports only SNI hosts, IP lists and an idle
+// timeout among the route fields.
+func (c *Config) validateTCPRoute(where string, r *Route, streamListeners map[string]bool, clusters map[string]bool, add func(string, ...any)) {
+	if len(r.Listeners) == 0 {
+		add("%s: tcp routes must name their listeners", where)
+	}
+	for _, l := range r.Listeners {
+		sni, ok := streamListeners[l]
+		switch {
+		case c.listener(l) == nil:
+			add("%s: unknown listener %q", where, l)
+		case !ok:
+			add("%s: listener %q is an http listener; tcp routes need a tcp or tls-passthrough listener", where, l)
+		case len(r.Match.Hosts) > 0 && !sni:
+			add("%s: match.hosts needs SNI, but listener %q is plain tcp without tls", where, l)
+		}
+	}
+	for _, h := range r.Match.Hosts {
+		if strings.Contains(h, "*") && !strings.HasPrefix(h, "*.") {
+			add("%s: wildcard hosts must look like *.example.com", where)
+		}
+	}
+	if len(r.Backends) == 0 {
+		add("%s: backends are required", where)
+	}
+	for _, b := range r.Backends {
+		if !clusters[b.Cluster] {
+			add("%s: unknown cluster %q", where, b.Cluster)
+		}
+		if b.Weight < 0 {
+			add("%s: backend weight must be positive", where)
+		}
+	}
+	if r.Timeout != nil && *r.Timeout <= 0 {
+		add("%s: timeout must be positive", where)
+	}
+	if z := r.AuthZ; z != nil {
+		for _, cidr := range slices.Concat(z.AllowIPs, z.DenyIPs) {
+			if _, err := netip.ParsePrefix(cidr); err != nil {
+				add("%s: authz: invalid CIDR %q", where, cidr)
+			}
+		}
+	}
+
+	// Everything else is HTTP-only.
+	rest := *r
+	rest.Name, rest.Type, rest.Listeners, rest.Priority, rest.Backends, rest.Timeout = "", "", nil, 0, nil, nil
+	rest.Match.Hosts = nil
+	if z := rest.AuthZ; z != nil {
+		ips := AuthZ{AllowIPs: z.AllowIPs, DenyIPs: z.DenyIPs}
+		if reflect.DeepEqual(*z, ips) {
+			rest.AuthZ = nil
+		}
+	}
+	if !reflect.ValueOf(rest).IsZero() {
+		add("%s: tcp routes support only listeners, priority, match.hosts, backends, timeout and authz.allowIPs/denyIPs", where)
+	}
 }

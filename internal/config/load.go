@@ -112,6 +112,15 @@ func (c *Config) ApplyDefaults() {
 	}
 	for i := range c.Listeners {
 		l := &c.Listeners[i]
+		if l.Type == "" {
+			l.Type = ListenerHTTP
+		}
+		if l.TLS != nil && l.TLS.MinVersion == "" {
+			l.TLS.MinVersion = "1.2"
+		}
+		if l.IsStream() {
+			continue
+		}
 		if len(l.Protocols) == 0 {
 			if l.TLS != nil {
 				l.Protocols = []string{"http1", "http2"}
@@ -130,9 +139,6 @@ func (c *Config) ApplyDefaults() {
 		}
 		if l.MaxConcurrentStreams == 0 {
 			l.MaxConcurrentStreams = 250
-		}
-		if l.TLS != nil && l.TLS.MinVersion == "" {
-			l.TLS.MinVersion = "1.2"
 		}
 	}
 	for i := range c.Clusters {

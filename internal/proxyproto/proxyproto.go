@@ -216,3 +216,12 @@ func parseV2(br *bufio.Reader) (net.Addr, net.Addr, error) {
 	return net.TCPAddrFromAddrPort(netip.AddrPortFrom(src, sport)),
 		net.TCPAddrFromAddrPort(netip.AddrPortFrom(dst, dport)), nil
 }
+
+// CloseWrite half-closes the underlying connection, so TCP proxying can
+// propagate a client's EOF.
+func (c *Conn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return errors.ErrUnsupported
+}
