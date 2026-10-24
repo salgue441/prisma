@@ -42,6 +42,7 @@ func (c *Config) Validate() error {
 	}
 
 	listeners := map[string]bool{}
+	addresses := map[string]string{}
 	if len(c.Listeners) == 0 {
 		add("listeners: at least one listener is required")
 	}
@@ -56,6 +57,10 @@ func (c *Config) Validate() error {
 		if _, _, err := net.SplitHostPort(l.Address); err != nil {
 			add("%s: invalid address %q", where, l.Address)
 		}
+		if other, dup := addresses[l.Address]; dup {
+			add("%s: address %s is already used by listener %s", where, l.Address, other)
+		}
+		addresses[l.Address] = l.Name
 		for _, p := range l.Protocols {
 			if !slices.Contains([]string{"http1", "http2", "h2c"}, p) {
 				add("%s: unknown protocol %q", where, p)
