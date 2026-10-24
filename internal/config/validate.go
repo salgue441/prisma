@@ -232,6 +232,14 @@ func (c *Config) Validate() error {
 				add("%s: grpcWeb requires an HTTP/2 cluster (protocol h2c or http2), %q is http1", where, b.Cluster)
 			}
 		}
+		if mi := r.Mirror; mi != nil {
+			if !clusters[mi.Cluster] {
+				add("%s: mirror: unknown cluster %q", where, mi.Cluster)
+			}
+			if mi.Percent <= 0 || mi.Percent > 100 {
+				add("%s: mirror.percent must be in (0, 100]", where)
+			}
+		}
 		if rw := r.Rewrite; rw != nil {
 			if rw.PathRegex != "" {
 				if _, err := regexp.Compile(rw.PathRegex); err != nil {
