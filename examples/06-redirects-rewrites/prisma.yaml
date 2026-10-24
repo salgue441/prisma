@@ -1,0 +1,66 @@
+# Redirects (answered by the gateway), rewrites (applied before proxying),
+# host-based routing and fixed responses.
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/06-redirects-rewrites/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: app
+    endpoints: [{address: "localhost:9001"}]
+
+routes:
+  # --- Redirects ---------------------------------------------------------
+  # Old API version moved permanently; the rest of the path and the query
+  # string are kept: /api/v1/orders/7?x=1 -> /api/v2/orders/7?x=1
+  - name: v1-moved
+    match: {pathPrefix: /api/v1}
+    redirect: {pathPrefixReplace: /api/v2, status: 308}
+
+  # Send plain-HTTP traffic for the docs host to HTTPS.
+  - name: docs-https
+    match: {hosts: [docs.example.com]}
+    redirect: {scheme: https, status: 301}
+
+  # Moved to another domain, dropping the query string.
+  - name: blog
+    match: {pathPrefix: /blog}
+    redirect: {host: blog.example.com, path: /, stripQuery: true, status: 302}
+
+  # --- Rewrites ----------------------------------------------------------
+  # /api/v2/orders/7 reaches the upstream as /orders/7.
+  - name: v2
+    match: {pathPrefix: /api/v2}
+    rewrite: {stripPrefix: /api/v2}
+    backends: [{cluster: app}]
+
+  # Regex rewrite with capture groups: /users/42/profile -> /echo/profiles/42
+  - name: profiles
+    match: {pathRegex: "^/users/[0-9]+/profile$"}
+    rewrite: {pathRegex: "^/users/([0-9]+)/profile$", replacement: "/echo/profiles/$1"}
+    backends: [{cluster: app}]
+
+  # Host-based routing with a wildcard, and a rewritten upstream Host header.
+  - name: tenants
+    match: {hosts: ["*.tenants.local"]}
+    rewrite: {pathRegex: "^(.*)$", replacement: "/echo/tenant$1", host: tenants.internal}
+    backends: [{cluster: app}]
+
+  # --- Fixed responses ---------------------------------------------------
+  - name: robots
+    match: {path: /robots.txt}
+    directResponse: {status: 200, contentType: text/plain, body: "User-agent: *\nDisallow: /api/\n"}
+
+  - name: maintenance
+    match: {pathPrefix: /admin}
+    directResponse:
+      status: 503
+      contentType: application/json
+      body: '{"error":"down for maintenance"}'

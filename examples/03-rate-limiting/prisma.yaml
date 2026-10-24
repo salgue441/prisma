@@ -1,0 +1,70 @@
+# Rate limiting: per client IP, per consumer, per header, and cluster-wide
+# limits shared through Redis.
+#   export PRISMA_DEMO_API_KEY=demo-key
+#   docker compose -f examples/03-rate-limiting/docker-compose.yaml up -d   # Redis
+#   go run ./cmd/demo-upstream
+#   go run ./cmd/prisma -config examples/03-rate-limiting/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+# Limits with backend: redis are shared by every gateway replica.
+redis:
+  address: localhost:6379
+  timeout: 50ms
+  prefix: "prisma:"
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  - name: orders
+    endpoints: [{address: "localhost:9001"}]
+
+consumers:
+  - name: free-tier
+    apiKeys: ["${env:PRISMA_DEMO_API_KEY}"]
+  - name: paid-tier
+    apiKeys: [paid-key]
+
+policies:
+  # Anonymous callers are limited per IP before anything else runs.
+  per-ip:
+    rateLimit:
+      - {name: per-ip, key: [client_ip], limit: 5, period: 1s, burst: 10}
+
+routes:
+  # 5 requests/second per IP, bursts of 10. Try: for i in $(seq 15); do ...
+  - name: public
+    match: {pathPrefix: /public}
+    use: [per-ip]
+    rewrite: {stripPrefix: /public, replacePrefix: /products}
+    backends: [{cluster: orders}]
+
+  # Each API consumer gets its own bucket; limits stack (tightest wins).
+  - name: api
+    match: {pathPrefix: /api/orders}
+    authn: {apiKey: {header: X-API-Key}}
+    rateLimit:
+      - {name: per-consumer-second, key: [consumer], limit: 3, period: 1s}
+      - {name: per-consumer-minute, key: [consumer], limit: 30, period: 1m}
+    rewrite: {stripPrefix: /api}
+    backends: [{cluster: orders}]
+
+  # Per-tenant limits keyed by a header, kept in Redis so every replica
+  # shares the same budget. If Redis is unreachable the gateway falls back
+  # to a local limit instead of failing the request.
+  - name: tenants
+    match: {pathPrefix: /tenant}
+    rateLimit:
+      - name: per-tenant
+        key: ["header:X-Tenant"]
+        limit: 2
+        period: 1s
+        backend: redis
+        onBackendFailure: local
+    rewrite: {stripPrefix: /tenant, replacePrefix: /echo/tenant}
+    backends: [{cluster: orders}]

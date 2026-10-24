@@ -1,0 +1,35 @@
+# Full stack: gateway, two demo upstreams, Jaeger and Prometheus.
+#   docker compose -f examples/13-observability/docker-compose.yaml up --build
+services:
+  prisma:
+    build: {context: ../.., args: {VERSION: example}}
+    command: ["-config", "/etc/prisma/prisma.yaml"]
+    volumes: ["./prisma.yaml:/etc/prisma/prisma.yaml:ro"]
+    ports: ["8080:8080", "9901:9901"]
+    depends_on: [demo, demo-2, jaeger]
+
+  demo:
+    image: golang:1.27
+    working_dir: /src
+    command: ["go", "run", "./cmd/demo-upstream", "-name", "demo-1"]
+    volumes: ["../..:/src:ro", "gomod:/go/pkg/mod", "gocache:/root/.cache/go-build"]
+
+  demo-2:
+    image: golang:1.27
+    working_dir: /src
+    command: ["go", "run", "./cmd/demo-upstream", "-name", "demo-2", "-graphql", "", "-grpc", ""]
+    volumes: ["../..:/src:ro", "gomod:/go/pkg/mod", "gocache:/root/.cache/go-build"]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment: {COLLECTOR_OTLP_ENABLED: "true"}
+    ports: ["16686:16686"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+
+volumes:
+  gomod: {}
+  gocache: {}

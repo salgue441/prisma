@@ -7,3 +7,6 @@
 *.test
 *.out
 coverage.*
+
+# Example build artifacts
+*.wasm

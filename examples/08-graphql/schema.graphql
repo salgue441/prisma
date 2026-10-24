@@ -1,0 +1,24 @@
+type Query {
+  me: User
+  user(id: ID!): User
+  users(first: Int = 10): [User!]!
+}
+
+type Mutation {
+  deleteUser(id: ID!): Boolean
+}
+
+type User {
+  id: ID!
+  name: String!
+  email: String
+  ssn: String
+  friends(first: Int = 10): [User!]!
+  orders: [Order!]!
+}
+
+type Order {
+  id: ID!
+  total: Float!
+  items: [String!]!
+}

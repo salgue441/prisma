@@ -25,6 +25,9 @@ grpcurl -plaintext -H 'x-api-key: demo-key' 127.0.0.1:8080 grpc.health.v1.Health
 
 Validate a config without starting the gateway: `go run ./cmd/prisma -config path.yaml -validate`.
 
+[examples/](examples) has fourteen runnable walkthroughs, one per feature area,
+from a minimal config to the Gateway API on a kind cluster.
+
 ## Features
 
 | Area | Supported |
@@ -69,6 +72,7 @@ Validate a config without starting the gateway: `go run ./cmd/prisma -config pat
 ```
 cmd/prisma            gateway entrypoint: reload, signals, graceful shutdown
 cmd/demo-upstream     sample REST, GraphQL and gRPC backends
+examples/             runnable walkthroughs (each config is checked by go test)
 internal/config       schema, ${env:}/${file:} secrets, defaults, validation
 internal/router       compiled host and path matching
 internal/pipeline     filter chain and per-request context
@@ -166,12 +170,14 @@ spec:
 
 Policies that target a Route override policies that target its Gateway.
 Invalid policies are rejected individually and reported in their status.
+[examples/14-kubernetes](examples/14-kubernetes) walks through both modes on
+a kind cluster.
 
 ## Not yet implemented
 
 - Gateway API: TLSRoute, TCPRoute, TLS passthrough, `allowedRoutes`
-  namespace selectors, and regex header matches. The upstream conformance
-  suite has not been run yet.
+  namespace selectors, and regex header matches. Tested on kind, but the
+  upstream conformance suite has not been run yet.
 - Proxy-Wasm: shared queues, gRPC callouts, and callouts from root contexts.
 - Consul discovery.
 - Applying tracing changes without a restart.

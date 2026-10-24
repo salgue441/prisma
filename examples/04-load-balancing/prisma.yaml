@@ -1,0 +1,70 @@
+# Load balancing across two upstream instances, sticky sessions, canary
+# splits and active health checks.
+#   go run ./cmd/demo-upstream -name blue
+#   go run ./cmd/demo-upstream -name green -rest :9011 -graphql "" -grpc ""
+#   go run ./cmd/prisma -config examples/04-load-balancing/prisma.yaml
+apiVersion: prisma/v1
+
+admin:
+  address: 127.0.0.1:9901
+
+listeners:
+  - name: public
+    address: ":8080"
+    protocols: [http1, h2c]
+
+clusters:
+  # Both instances, weighted 3:1, with active health checks.
+  - name: weighted
+    endpoints:
+      - {address: "localhost:9001", weight: 3}
+      - {address: "localhost:9011", weight: 1}
+    loadBalancer: {policy: weighted_round_robin}
+    healthCheck: {type: http, path: /health, interval: 2s, healthyThreshold: 1, unhealthyThreshold: 2}
+
+  # Prefers the instance with the lowest latency and fewest requests in flight.
+  - name: fastest
+    endpoints: [{address: "localhost:9001"}, {address: "localhost:9011"}]
+    loadBalancer: {policy: p2c_ewma}
+
+  # Consistent hashing: the same X-User always lands on the same instance.
+  - name: sticky
+    endpoints: [{address: "localhost:9001"}, {address: "localhost:9011"}]
+    loadBalancer: {policy: ring_hash, hashOn: "header:X-User"}
+
+  # Single-instance clusters for the canary split below.
+  - name: stable
+    endpoints: [{address: "localhost:9001"}]
+  - name: canary
+    endpoints: [{address: "localhost:9011"}]
+
+routes:
+  - name: weighted
+    match: {pathPrefix: /weighted}
+    rewrite: {stripPrefix: /weighted, replacePrefix: /orders}
+    backends: [{cluster: weighted}]
+
+  - name: fastest
+    match: {pathPrefix: /fastest}
+    rewrite: {stripPrefix: /fastest, replacePrefix: /orders}
+    backends: [{cluster: fastest}]
+
+  - name: sticky
+    match: {pathPrefix: /sticky}
+    rewrite: {stripPrefix: /sticky, replacePrefix: /orders}
+    backends: [{cluster: sticky}]
+
+  # Testers opt in to the canary with a header...
+  - name: canary-opt-in
+    priority: 10
+    match: {pathPrefix: /shop, headers: {X-Canary: "always"}}
+    rewrite: {stripPrefix: /shop, replacePrefix: /orders}
+    backends: [{cluster: canary}]
+
+  # ...everyone else gets a 90/10 split.
+  - name: canary-split
+    match: {pathPrefix: /shop}
+    rewrite: {stripPrefix: /shop, replacePrefix: /orders}
+    backends:
+      - {cluster: stable, weight: 90}
+      - {cluster: canary, weight: 10}
